@@ -1,0 +1,36 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html {
+    -webkit-tap-highlight-color: transparent;
+  }
+  body {
+    @apply text-ink-900 antialiased;
+  }
+  ::selection {
+    @apply bg-signal-orange/20;
+  }
+}
+
+@layer components {
+  .btn-primary {
+    @apply inline-flex items-center justify-center gap-2 rounded-lg bg-signal-orange px-4 py-2.5
+      text-sm font-semibold text-white shadow-panel transition active:scale-[0.98]
+      hover:bg-signal-orange/90 disabled:opacity-40 disabled:pointer-events-none;
+  }
+  .btn-secondary {
+    @apply inline-flex items-center justify-center gap-2 rounded-lg border border-ink-700/10 bg-white px-4 py-2.5
+      text-sm font-semibold text-ink-800 shadow-panel transition active:scale-[0.98]
+      hover:bg-ink-900/[0.03] disabled:opacity-40 disabled:pointer-events-none;
+  }
+  .input-field {
+    @apply w-full rounded-lg border border-ink-700/15 bg-white px-3.5 py-2.5 text-sm text-ink-900
+      placeholder:text-ink-600/40 outline-none transition focus:border-signal-orange
+      focus:ring-2 focus:ring-signal-orange/20;
+  }
+  .panel {
+    @apply rounded-2xl border border-ink-700/10 bg-white shadow-panel;
+  }
+}
