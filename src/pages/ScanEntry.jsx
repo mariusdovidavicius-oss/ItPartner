@@ -10,12 +10,36 @@ export default function ScanEntry() {
   const [saving, setSaving] = useState(false);
   const [feedback, setFeedback] = useState(null); // { type: 'ok' | 'error', message }
   const [recent, setRecent] = useState([]);
+  const [catalogNotFound, setCatalogNotFound] = useState(false);
   const inputRef = useRef(null);
 
   useEffect(() => {
     inputRef.current?.focus();
     loadRecent();
   }, []);
+
+  // Ieško IAN kodo kataloge (su debounce) ir automatiškai užpildo pavadinimą, jei randama.
+  useEffect(() => {
+    const trimmed = ian.trim();
+    if (!trimmed) {
+      setCatalogNotFound(false);
+      return;
+    }
+    const handle = setTimeout(async () => {
+      const { data } = await supabase
+        .from("catalog")
+        .select("name")
+        .eq("ian", trimmed)
+        .maybeSingle();
+      if (data?.name) {
+        setName(data.name);
+        setCatalogNotFound(false);
+      } else {
+        setCatalogNotFound(true);
+      }
+    }, 400);
+    return () => clearTimeout(handle);
+  }, [ian]);
 
   async function loadRecent() {
     const { data } = await supabase
@@ -96,12 +120,19 @@ export default function ScanEntry() {
         </div>
 
         <div className="mt-4 grid gap-3 sm:grid-cols-3">
-          <input
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            placeholder="Pavadinimas (nebūtina)"
-            className="input-field bg-white/[0.06] border-white/10 text-white placeholder:text-white/30 focus:bg-white"
-          />
+          <div>
+            <input
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="Pavadinimas (nebūtina)"
+              className="input-field bg-white/[0.06] border-white/10 text-white placeholder:text-white/30 focus:bg-white"
+            />
+            {catalogNotFound && (
+              <p className="mt-1.5 text-xs text-signal-amber">
+                Nerasta kataloge - įveskite pavadinimą rankiniu būdu
+              </p>
+            )}
+          </div>
           <input
             value={category}
             onChange={(e) => setCategory(e.target.value)}

@@ -122,3 +122,26 @@ create policy "Authenticated read access - item_history"
 -- Įjungia realaus laiko srautą "items" ir "pallets" lentelėms.
 alter publication supabase_realtime add table public.items;
 alter publication supabase_realtime add table public.pallets;
+
+-- ------------------------------------------------------------
+-- 6. CATALOG — etaloninis IAN → pavadinimas katalogas (importuojamas iš Excel)
+-- ------------------------------------------------------------
+create table if not exists public.catalog (
+  id           uuid primary key default gen_random_uuid(),
+  ian          text not null unique,           -- IAN kodas, ištrauktas iš originalaus teksto
+  name         text,                            -- pavadinimas be skliaustelių dalies
+  raw_text     text,                            -- originalus pilnas tekstas iš Excel, neparsintas
+  imported_at  timestamptz not null default now()
+);
+
+comment on table public.catalog is 'Etaloninis įrankių katalogas (IAN → pavadinimas), importuojamas iš Excel/CSV.';
+
+create index if not exists catalog_ian_idx on public.catalog (ian);
+
+alter table public.catalog enable row level security;
+
+create policy "Authenticated full access - catalog"
+  on public.catalog for all
+  to authenticated
+  using (true)
+  with check (true);
