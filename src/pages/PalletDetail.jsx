@@ -41,13 +41,12 @@ export default function PalletDetail() {
     if (status === "closed") {
       const { data: updated } = await supabase
         .from("pallets")
-        .select("number, shipments(code)")
+        .select("number")
         .eq("id", id)
         .single();
-      const palletLbl = updated?.number ? `${updated.number} paletė` : "paletė";
-      const shipmentCode = updated?.shipments?.code || "naują siuntą";
+      const palletLbl = updated?.number ? `${updated.number} paletė` : "Paletė";
       navigate("/paletes", {
-        state: { closedMessage: `${palletLbl} uždaryta ir priskirta siuntai ${shipmentCode}` }
+        state: { closedMessage: `${palletLbl} uždaryta ir laukia išvežimo` }
       });
     }
   }

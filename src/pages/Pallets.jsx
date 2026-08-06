@@ -1,22 +1,41 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import {
   Loader2, ChevronRight, Boxes, CheckCircle2,
-  FileSpreadsheet, Send, Clock
+  FileSpreadsheet, Send, Clock, CheckSquare, Square
 } from "lucide-react";
 import * as XLSX from "xlsx";
 import { supabase } from "../lib/supabaseClient";
+import { prettifyDestination, UNCLASSIFIED } from "../lib/destination";
+
+function DestinationBadge({ destination }) {
+  const isUnclassified = !destination || destination === UNCLASSIFIED;
+  return (
+    <span
+      className={`ml-2 inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${
+        isUnclassified
+          ? "border-signal-red/30 bg-signal-red/10 text-signal-red"
+          : "border-signal-orange/30 bg-signal-orange/10 text-signal-orange"
+      }`}
+    >
+      {prettifyDestination(destination)}
+    </span>
+  );
+}
 
 export default function Pallets() {
   const location = useLocation();
   const navigate = useNavigate();
-  const [openShipment, setOpenShipment] = useState(null);
-  const [shipmentMap, setShipmentMap] = useState({}); // shipment id -> shipment obj
-  const [pallets, setPallets] = useState([]);          // visos closed paletės
-  const [quantities, setQuantities] = useState({});    // pallet id -> sum(quantity)
+
+  const [pallets, setPallets] = useState([]);       // visos closed paletės (laukiančios + jau priskirtos siuntai)
+  const [shipments, setShipments] = useState([]);   // visos išsiųstos (status='sent') siuntos
+  const [quantities, setQuantities] = useState({}); // pallet id -> sum(quantity)
   const [loading, setLoading] = useState(true);
+  const [selected, setSelected] = useState(new Set());
+  const [activeFilter, setActiveFilter] = useState("all"); // 'all' arba konkreti destination reikšmė
   const [downloading, setDownloading] = useState(false);
   const [marking, setMarking] = useState(false);
+  const [historyDownloadingId, setHistoryDownloadingId] = useState(null);
   const [notice, setNotice] = useState("");
 
   useEffect(() => {
@@ -39,21 +58,24 @@ export default function Pallets() {
     return () => supabase.removeChannel(channel);
   }, []);
 
+  // Pasirinkimą laikom tik vienos paskirties viduje — keičiant filtrą jį išvalome,
+  // kad neliktų pažymėtų paletžų iš dabar nebematomos paskirties.
+  useEffect(() => {
+    setSelected(new Set());
+  }, [activeFilter]);
+
   async function load() {
     setLoading(true);
 
     const { data: shipmentsData } = await supabase
       .from("shipments")
       .select("*")
-      .order("created_at", { ascending: false });
-
-    const sMap = {};
-    (shipmentsData || []).forEach((s) => { sMap[s.id] = s; });
-    const open = (shipmentsData || []).find((s) => s.status === "open") || null;
+      .eq("status", "sent")
+      .order("sent_at", { ascending: false });
 
     const { data: palletData } = await supabase
       .from("pallets")
-      .select("id, code, number, packed_at, shipment_id")
+      .select("id, code, number, packed_at, shipment_id, destination")
       .eq("status", "closed")
       .order("number", { ascending: false, nullsFirst: false });
 
@@ -69,68 +91,89 @@ export default function Pallets() {
       });
     }
 
-    setOpenShipment(open);
-    setShipmentMap(sMap);
+    setShipments(shipmentsData || []);
     setPallets(palletData || []);
     setQuantities(qtys);
+
+    // Pašalina iš pažymėjimo paletes, kurios tarp perkrovimų nebeliko "laukiančios"
+    const stillWaitingIds = new Set(
+      (palletData || []).filter((p) => !p.shipment_id).map((p) => p.id)
+    );
+    setSelected((prev) => {
+      const next = new Set();
+      prev.forEach((id) => { if (stillWaitingIds.has(id)) next.add(id); });
+      return next;
+    });
+
     setLoading(false);
   }
 
-  async function handleMarkSent() {
-    if (!openShipment) return;
-    if (!confirm("Pažymėti siuntą kaip išvežtą? Sekančios uždarytos paletės automatiškai pradės naują siuntą.")) return;
-    setMarking(true);
-    await supabase
-      .from("shipments")
-      .update({ status: "sent", sent_at: new Date().toISOString() })
-      .eq("id", openShipment.id);
-    setMarking(false);
+  const waitingPallets = useMemo(
+    () => pallets.filter((p) => !p.shipment_id),
+    [pallets]
+  );
+
+  // Filtro mygtukai generuojami dinamiškai iš to, kas realiai yra duomenyse —
+  // jokio fiksuoto sąrašo, naujos paskirtys atsiranda automatiškai.
+  const destinationFilters = useMemo(() => {
+    const set = new Set();
+    pallets.forEach((p) => set.add(p.destination || UNCLASSIFIED));
+    shipments.forEach((s) => set.add(s.destination || UNCLASSIFIED));
+    const sorted = Array.from(set).sort((a, b) =>
+      prettifyDestination(a).localeCompare(prettifyDestination(b))
+    );
+    return [
+      { value: "all", label: "Visos" },
+      ...sorted.map((d) => ({ value: d, label: prettifyDestination(d) }))
+    ];
+  }, [pallets, shipments]);
+
+  const waitingPalletsFiltered = useMemo(
+    () => waitingPallets.filter((p) => activeFilter === "all" || p.destination === activeFilter),
+    [waitingPallets, activeFilter]
+  );
+
+  const shipmentsFiltered = useMemo(
+    () => shipments.filter((s) => activeFilter === "all" || s.destination === activeFilter),
+    [shipments, activeFilter]
+  );
+
+  const shipmentPalletsMap = useMemo(() => {
+    const map = {};
+    pallets.forEach((p) => {
+      if (p.shipment_id) {
+        (map[p.shipment_id] ||= []).push(p);
+      }
+    });
+    return map;
+  }, [pallets]);
+
+  // Pasirinkimas galimas tik kai peržiūrima konkreti paskirtis — taip niekada
+  // negalima pažymėti paletžų iš skirtingų paskirčių vienu metu.
+  const selectionDisabled = activeFilter === "all";
+
+  const selectedCount = selected.size;
+  const selectedQty = waitingPalletsFiltered
+    .filter((p) => selected.has(p.id))
+    .reduce((s, p) => s + (quantities[p.id] || 0), 0);
+
+  function toggleSelect(id) {
+    if (selectionDisabled) return;
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
   }
 
-  async function downloadExcel() {
-    if (!openShipment) return;
-    setDownloading(true);
+  function selectAll() {
+    if (selectionDisabled) return;
+    setSelected(new Set(waitingPalletsFiltered.map((p) => p.id)));
+  }
 
-    const openPallets = pallets
-      .filter((p) => p.shipment_id === openShipment.id)
-      .sort((a, b) => (a.number || 0) - (b.number || 0));
-
-    const palletIds = openPallets.map((p) => p.id);
-    let itemsData = [];
-    if (palletIds.length > 0) {
-      const { data } = await supabase
-        .from("items")
-        .select("pallet_id, ian, name, quantity")
-        .in("pallet_id", palletIds);
-      itemsData = data || [];
-    }
-
-    const rows = [["Paletės Nr", "Supakavimo data", "Pavadinimas", "Kiekis", "IAN kodai"]];
-    for (const p of openPallets) {
-      const palletItems = itemsData.filter((i) => i.pallet_id === p.id);
-      const byName = new Map();
-      for (const item of palletItems) {
-        const key = item.name || "(be pavadinimo)";
-        if (!byName.has(key)) byName.set(key, { totalQty: 0, ians: [] });
-        const entry = byName.get(key);
-        entry.totalQty += item.quantity || 1;
-        entry.ians.push(item.ian);
-      }
-      if (byName.size === 0) {
-        rows.push([palletLabel(p), formatDate(p.packed_at), "(tuščia paletė)", 0, ""]);
-      } else {
-        for (const [name, { totalQty, ians }] of byName.entries()) {
-          rows.push([palletLabel(p), formatDate(p.packed_at), name, totalQty, ians.join("; ")]);
-        }
-      }
-    }
-
-    const ws = XLSX.utils.aoa_to_sheet(rows);
-    ws["!cols"] = [{ wch: 14 }, { wch: 16 }, { wch: 42 }, { wch: 8 }, { wch: 60 }];
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, "Siunta");
-    XLSX.writeFile(wb, `${openShipment.code}.xlsx`);
-    setDownloading(false);
+  function clearSelection() {
+    setSelected(new Set());
   }
 
   function palletLabel(p) {
@@ -142,16 +185,143 @@ export default function Pallets() {
     return new Date(ts).toLocaleDateString("lt-LT");
   }
 
-  const openShipmentPallets = pallets.filter((p) => p.shipment_id === openShipment?.id);
-  const openShipmentQty = openShipmentPallets.reduce((s, p) => s + (quantities[p.id] || 0), 0);
-  const hasPending = openShipmentPallets.length > 0;
+  // Bendra Excel generavimo funkcija — naudojama tiek pažymėtoms
+  // paletėms, tiek atsisiunčiant jau išvežtos siuntos suvestinę pakartotinai.
+  // Saugikliui: atsisako generuoti, jei sąraše sumaišytos abi paskirtys,
+  // kad vadybininkei nesusimaišytų sandėliai viename faile.
+  async function exportPalletsToExcel(palletList, filename) {
+    const destinationsInList = new Set(palletList.map((p) => p.destination || UNCLASSIFIED));
+    if (destinationsInList.size > 1) {
+      setNotice("Klaida: negalima generuoti Excel su paletėmis iš skirtingų paskirčių vienu metu.");
+      return false;
+    }
+    const destinationLabel = prettifyDestination([...destinationsInList][0]);
+
+    const sorted = [...palletList].sort((a, b) => (a.number || 0) - (b.number || 0));
+    const palletIds = sorted.map((p) => p.id);
+    let itemsData = [];
+    if (palletIds.length > 0) {
+      const { data } = await supabase
+        .from("items")
+        .select("pallet_id, ian, name, quantity")
+        .in("pallet_id", palletIds);
+      itemsData = data || [];
+    }
+
+    const rows = [["Paletės Nr", "Paskirtis", "Supakavimo data", "Pavadinimas", "Kiekis", "IAN kodai"]];
+    for (const p of sorted) {
+      const palletItems = itemsData.filter((i) => i.pallet_id === p.id);
+      const byName = new Map();
+      for (const item of palletItems) {
+        const key = item.name || "(be pavadinimo)";
+        if (!byName.has(key)) byName.set(key, { totalQty: 0, ians: [] });
+        const entry = byName.get(key);
+        entry.totalQty += item.quantity || 1;
+        entry.ians.push(item.ian);
+      }
+      if (byName.size === 0) {
+        rows.push([palletLabel(p), destinationLabel, formatDate(p.packed_at), "(tuščia paletė)", 0, ""]);
+      } else {
+        for (const [name, { totalQty, ians }] of byName.entries()) {
+          rows.push([palletLabel(p), destinationLabel, formatDate(p.packed_at), name, totalQty, ians.join("; ")]);
+        }
+      }
+    }
+
+    const ws = XLSX.utils.aoa_to_sheet(rows);
+    ws["!cols"] = [{ wch: 14 }, { wch: 16 }, { wch: 16 }, { wch: 42 }, { wch: 8 }, { wch: 60 }];
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Paletės");
+    XLSX.writeFile(wb, filename);
+    return true;
+  }
+
+  async function handleDownloadSelected() {
+    if (selectedCount === 0) return;
+    setDownloading(true);
+    const selectedPallets = waitingPalletsFiltered.filter((p) => selected.has(p.id));
+    const suffix = activeFilter !== "all" ? `-${activeFilter}` : "";
+    await exportPalletsToExcel(
+      selectedPallets,
+      `Paletes-${new Date().toISOString().slice(0, 10)}${suffix}.xlsx`
+    );
+    setDownloading(false);
+  }
+
+  // Generuoja siuntos kodą pagal dabartinę datą, pvz. "SIUNTA-2026-08-06".
+  // Jei tą dieną jau yra siuntų su tokiu kodo priešdėliu (kelios "Pažymėti
+  // kaip išvežta" partijos per dieną), pridedamas skaitinis priesagas,
+  // kad code nekonfliktuotų su ankstesniu tos dienos įrašu.
+  async function generateShipmentCode() {
+    const dateStr = new Date().toISOString().slice(0, 10);
+    const { data } = await supabase
+      .from("shipments")
+      .select("code")
+      .like("code", `SIUNTA-${dateStr}%`);
+    const count = (data || []).length;
+    return count === 0
+      ? `SIUNTA-${dateStr}`
+      : `SIUNTA-${dateStr}-${String(count + 1).padStart(2, "0")}`;
+  }
+
+  async function handleMarkSelectedSent() {
+    if (selectedCount === 0) return;
+
+    const selectedPalletObjs = waitingPalletsFiltered.filter((p) => selected.has(p.id));
+    const destinationsSelected = new Set(selectedPalletObjs.map((p) => p.destination || UNCLASSIFIED));
+    if (destinationsSelected.size !== 1) {
+      setNotice("Klaida: pažymėtos paletės turi skirtingas paskirtis — pasirinkite tik vienos paskirties paletes.");
+      return;
+    }
+    const destination = [...destinationsSelected][0];
+
+    if (!confirm(`Pažymėti ${selectedCount} paletę(-ių) kaip išvežtą(-as)?`)) return;
+    setMarking(true);
+
+    const code = await generateShipmentCode();
+    const { data: shipment, error: shipmentError } = await supabase
+      .from("shipments")
+      .insert({ code, status: "sent", sent_at: new Date().toISOString(), destination })
+      .select("id, code")
+      .single();
+
+    if (shipmentError) {
+      setMarking(false);
+      setNotice(`Klaida kuriant siuntą: ${shipmentError.message}`);
+      return;
+    }
+
+    const ids = Array.from(selected);
+    const { error: updateError } = await supabase
+      .from("pallets")
+      .update({ shipment_id: shipment.id })
+      .in("id", ids);
+
+    setMarking(false);
+
+    if (updateError) {
+      setNotice(`Klaida priskiriant paletes siuntai: ${updateError.message}`);
+      return;
+    }
+
+    setNotice(`${ids.length} paletė(-ių) pažymėta kaip išvežta (${shipment.code})`);
+    setSelected(new Set());
+    load();
+  }
+
+  async function handleDownloadHistory(shipment) {
+    setHistoryDownloadingId(shipment.id);
+    const shipmentPallets = shipmentPalletsMap[shipment.id] || [];
+    await exportPalletsToExcel(shipmentPallets, `${shipment.code}.xlsx`);
+    setHistoryDownloadingId(null);
+  }
 
   return (
     <div className="space-y-5">
       <div>
         <h1 className="text-xl font-bold text-ink-900 lg:text-2xl">Paletės</h1>
         <p className="mt-1 text-sm text-ink-600/70">
-          Išvežimo suvestinė ir visų uždarytų paletžų istorija.
+          Pasirinkite laukiančias paletes ir pažymėkite jas kaip išvežtas vienu metu.
         </p>
       </div>
 
@@ -162,119 +332,192 @@ export default function Pallets() {
         </div>
       )}
 
-      {/* Dabartinės siuntos suvestinė */}
-      {loading ? (
-        <div className="flex justify-center py-6 text-ink-600/50">
-          <Loader2 className="animate-spin" size={20} />
+      {/* Paskirties filtras */}
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="text-xs font-semibold uppercase tracking-wide text-ink-600/50">
+          Paskirtis
+        </span>
+        <div className="inline-flex flex-wrap rounded-xl border border-ink-700/15 bg-white p-1 text-sm font-medium">
+          {destinationFilters.map((opt) => (
+            <button
+              key={opt.value}
+              type="button"
+              onClick={() => setActiveFilter(opt.value)}
+              className={
+                activeFilter === opt.value
+                  ? "rounded-lg bg-ink-950 px-3.5 py-1.5 text-white"
+                  : "rounded-lg px-3.5 py-1.5 text-ink-600/70 hover:text-ink-900"
+              }
+            >
+              {opt.label}
+            </button>
+          ))}
         </div>
-      ) : hasPending ? (
-        <div className="panel space-y-4 p-4 lg:p-5">
-          <div className="flex flex-wrap items-start justify-between gap-3">
-            <div>
-              <p className="text-[11px] font-mono uppercase tracking-widest text-ink-600/50">
-                Laukia išvežimo
-              </p>
-              <p className="mt-0.5 font-mono text-lg font-bold text-ink-900">
-                {openShipment.code}
-              </p>
-              <p className="mt-1 text-sm text-ink-600/70">
-                {openShipmentPallets.length} paletė(-ių) &middot; {openShipmentQty} vnt.
-              </p>
-            </div>
-            <div className="flex flex-wrap gap-2">
-              <button
-                onClick={downloadExcel}
-                disabled={downloading}
-                className="btn-secondary"
-              >
-                {downloading
-                  ? <Loader2 size={15} className="animate-spin" />
-                  : <FileSpreadsheet size={15} />}
-                Atsisiųsti Excel
-              </button>
-              <button
-                onClick={handleMarkSent}
-                disabled={marking}
-                className="btn-primary"
-              >
-                {marking
-                  ? <Loader2 size={15} className="animate-spin" />
-                  : <Send size={15} />}
-                Pažymėti kaip išvežta
-              </button>
-            </div>
+      </div>
+
+      {/* Laukiančios išvežimo — checkbox pasirinkimas */}
+      <div className="panel space-y-4 p-4 lg:p-5">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <h2 className="text-sm font-semibold text-ink-800">Laukiančios išvežimo</h2>
+          <div className="flex flex-wrap gap-2">
+            <button
+              type="button"
+              onClick={selectAll}
+              disabled={selectionDisabled || waitingPalletsFiltered.length === 0}
+              className="btn-secondary"
+            >
+              <CheckSquare size={14} /> Pažymėti visas
+            </button>
+            <button
+              type="button"
+              onClick={clearSelection}
+              disabled={selectedCount === 0}
+              className="btn-secondary"
+            >
+              <Square size={14} /> Nuimti pažymėjimą
+            </button>
           </div>
         </div>
-      ) : (
-        !loading && (
-          <div className="panel flex items-center gap-3 p-4 text-sm text-ink-600/60">
+
+        {selectionDisabled && (
+          <p className="text-xs text-ink-600/50">
+            Pasirinkite konkrečią paskirtį aukščiau, kad galėtumėte žymėti paletes — negalima maišyti
+            skirtingų paskirčių vienoje siuntoje.
+          </p>
+        )}
+
+        {loading ? (
+          <div className="flex justify-center py-6 text-ink-600/50">
+            <Loader2 className="animate-spin" size={20} />
+          </div>
+        ) : waitingPalletsFiltered.length === 0 ? (
+          <div className="flex items-center gap-3 py-4 text-sm text-ink-600/60">
             <Clock size={16} className="shrink-0 text-ink-600/30" />
             Nėra paletžų, laukiančių išvežimo.
           </div>
-        )
-      )}
-
-      {/* Visų uždarytų paletžų sąrašas */}
-      {!loading && pallets.length === 0 ? (
-        <div className="panel flex flex-col items-center gap-2 py-12 text-center">
-          <Boxes className="text-ink-600/30" size={28} />
-          <p className="text-sm text-ink-600/60">Dar nėra uždarytų paletžų.</p>
-        </div>
-      ) : !loading && (
-        <div className="panel overflow-hidden">
-          <table className="w-full text-left text-sm">
-            <thead className="border-b border-ink-900/5 bg-ink-900/[0.02] text-xs uppercase tracking-wide text-ink-600/60">
-              <tr>
-                <th className="px-4 py-3 font-semibold">Paletė</th>
-                <th className="px-4 py-3 font-semibold">Uždarymo data</th>
-                <th className="px-4 py-3 font-semibold">Vnt.</th>
-                <th className="px-4 py-3 font-semibold">Siunta</th>
-                <th className="px-4 py-3 font-semibold"></th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-ink-900/5">
-              {pallets.map((p) => {
-                const isOpen = openShipment && p.shipment_id === openShipment.id;
-                const shipment = shipmentMap[p.shipment_id];
-                return (
-                  <tr
-                    key={p.id}
-                    className={isOpen
-                      ? "bg-signal-amber/[0.04] hover:bg-signal-amber/[0.07]"
-                      : "hover:bg-ink-900/[0.015]"}
-                  >
-                    <td className="px-4 py-3 font-semibold text-ink-900">{palletLabel(p)}</td>
-                    <td className="px-4 py-3 text-ink-600/70">{formatDate(p.packed_at)}</td>
-                    <td className="px-4 py-3 font-mono text-ink-800">{quantities[p.id] || 0}</td>
-                    <td className="px-4 py-3">
-                      {isOpen ? (
-                        <span className="inline-flex items-center gap-1 rounded-full border border-signal-amber/30 bg-signal-amber/15 px-2.5 py-0.5 text-xs font-semibold text-[#8a5b10]">
-                          <Clock size={10} />
-                          Laukia
-                        </span>
-                      ) : shipment?.sent_at ? (
-                        <span className="text-xs text-signal-teal">
-                          Išvežta {formatDate(shipment.sent_at)}
-                        </span>
-                      ) : (
-                        <span className="text-xs text-ink-600/40">—</span>
-                      )}
-                    </td>
-                    <td className="px-4 py-3 text-right">
-                      <Link
-                        to={`/paletes/${p.id}`}
-                        className="inline-flex items-center gap-1 text-xs font-medium text-signal-orange hover:underline"
-                      >
-                        Peržiūrėti <ChevronRight size={13} />
-                      </Link>
-                    </td>
+        ) : (
+          <>
+            <div className="overflow-hidden rounded-xl border border-ink-700/10">
+              <table className="w-full text-left text-sm">
+                <thead className="border-b border-ink-900/5 bg-ink-900/[0.02] text-xs uppercase tracking-wide text-ink-600/60">
+                  <tr>
+                    <th className="w-10 px-4 py-3"></th>
+                    <th className="px-4 py-3 font-semibold">Paletė</th>
+                    <th className="px-4 py-3 font-semibold">Uždarymo data</th>
+                    <th className="px-4 py-3 font-semibold">Vnt.</th>
+                    <th className="px-4 py-3 font-semibold"></th>
                   </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
-      )}
+                </thead>
+                <tbody className="divide-y divide-ink-900/5">
+                  {waitingPalletsFiltered.map((p) => (
+                    <tr
+                      key={p.id}
+                      className={selected.has(p.id) ? "bg-signal-orange/5" : "hover:bg-ink-900/[0.015]"}
+                    >
+                      <td className="px-4 py-3">
+                        <input
+                          type="checkbox"
+                          checked={selected.has(p.id)}
+                          onChange={() => toggleSelect(p.id)}
+                          disabled={selectionDisabled}
+                          className="h-4 w-4 rounded border-ink-700/30 text-signal-orange focus:ring-signal-orange/30"
+                        />
+                      </td>
+                      <td className="px-4 py-3 font-semibold text-ink-900">
+                        {palletLabel(p)}
+                        <DestinationBadge destination={p.destination} />
+                      </td>
+                      <td className="px-4 py-3 text-ink-600/70">{formatDate(p.packed_at)}</td>
+                      <td className="px-4 py-3 font-mono text-ink-800">{quantities[p.id] || 0}</td>
+                      <td className="px-4 py-3 text-right">
+                        <Link
+                          to={`/paletes/${p.id}`}
+                          className="inline-flex items-center gap-1 text-xs font-medium text-signal-orange hover:underline"
+                        >
+                          Peržiūrėti <ChevronRight size={13} />
+                        </Link>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+
+            <div className="flex flex-wrap items-center justify-between gap-3 border-t border-ink-900/5 pt-4">
+              <p className="text-sm text-ink-600/70">
+                Pažymėta: <strong className="text-ink-900">{selectedCount}</strong> paletė(-ių),{" "}
+                <strong className="text-ink-900">{selectedQty}</strong> vnt.
+              </p>
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={handleDownloadSelected}
+                  disabled={selectedCount === 0 || downloading}
+                  className="btn-secondary"
+                >
+                  {downloading
+                    ? <Loader2 size={15} className="animate-spin" />
+                    : <FileSpreadsheet size={15} />}
+                  Atsisiųsti Excel sąrašą
+                </button>
+                <button
+                  type="button"
+                  onClick={handleMarkSelectedSent}
+                  disabled={selectedCount === 0 || marking}
+                  className="btn-primary"
+                >
+                  {marking
+                    ? <Loader2 size={15} className="animate-spin" />
+                    : <Send size={15} />}
+                  Pažymėti kaip išvežta
+                </button>
+              </div>
+            </div>
+          </>
+        )}
+      </div>
+
+      {/* Jau išvežtos siuntos — istorija */}
+      <div className="panel space-y-3 p-4 lg:p-5">
+        <h2 className="text-sm font-semibold text-ink-800">Jau išvežtos siuntos</h2>
+        {!loading && shipmentsFiltered.length === 0 ? (
+          <div className="flex flex-col items-center gap-2 py-8 text-center">
+            <Boxes className="text-ink-600/30" size={24} />
+            <p className="text-sm text-ink-600/60">Dar nėra išvežtų siuntų.</p>
+          </div>
+        ) : (
+          <div className="divide-y divide-ink-900/5">
+            {shipmentsFiltered.map((s) => {
+              const shipmentPallets = shipmentPalletsMap[s.id] || [];
+              const qty = shipmentPallets.reduce((sum, p) => sum + (quantities[p.id] || 0), 0);
+              return (
+                <div key={s.id} className="flex flex-wrap items-center justify-between gap-3 py-3">
+                  <div>
+                    <p className="font-mono text-sm font-semibold text-ink-900">
+                      {s.code}
+                      <DestinationBadge destination={s.destination} />
+                    </p>
+                    <p className="text-xs text-ink-600/60">
+                      Išvežta {formatDate(s.sent_at)} &middot; {shipmentPallets.length} paletė(-ių) &middot; {qty} vnt.
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => handleDownloadHistory(s)}
+                    disabled={historyDownloadingId === s.id || shipmentPallets.length === 0}
+                    className="btn-secondary"
+                  >
+                    {historyDownloadingId === s.id
+                      ? <Loader2 size={14} className="animate-spin" />
+                      : <FileSpreadsheet size={14} />}
+                    Atsisiųsti Excel
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
     </div>
   );
 }

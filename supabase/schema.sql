@@ -11,7 +11,7 @@ create extension if not exists "pgcrypto";
 -- ------------------------------------------------------------
 create table if not exists public.pallets (
   id          uuid primary key default gen_random_uuid(),
-  code        text not null unique,           -- pvz. "PAL-2026-001"
+  code        text not null,                   -- pvz. "PAL-2026-001" — NEBE unikalus, nes numeracija cikliškai atsistato po kiekvienos siuntos
   status      text not null default 'open'
               check (status in ('open', 'closed', 'shipped', 'delivered')),
   notes       text,
@@ -180,55 +180,27 @@ alter table public.pallets
 create index if not exists pallets_shipment_id_idx on public.pallets (shipment_id);
 
 -- ------------------------------------------------------------
--- 9. Trigeris: uždarius paletę → automatiškai priskirti siuntai
+-- 9. Trigeris: uždarius paletę → tik pažymėti supakavimo laiką
+-- Siuntai paletė nebepriskiriama automatiškai čia — tai atliekama
+-- rankiniu būdu per "/paletes" puslapį (žr. 14 sekciją, shipments insert).
 -- ------------------------------------------------------------
-create or replace function public.auto_assign_shipment()
+drop trigger if exists pallets_auto_assign_shipment on public.pallets;
+drop function if exists public.auto_assign_shipment();
+
+create or replace function public.set_pallet_packed_at()
 returns trigger as $$
-declare
-  v_shipment_id uuid;
-  v_date_str    text;
-  v_seq         int;
-  v_code        text;
 begin
   -- Veikia tik kai status keičiasi į 'closed'
-  if new.status = 'closed' and old.status is distinct from 'closed' then
-
-    -- Nustatyti supakavimo datą
-    if new.packed_at is null then
-      new.packed_at := now();
-    end if;
-
-    -- Priskirti siuntai, jei dar nepriskirta
-    if new.shipment_id is null then
-      select id into v_shipment_id
-        from public.shipments
-       where status = 'open'
-       order by created_at desc
-       limit 1;
-
-      -- Jei atviros siuntos nėra — sukurti naują
-      if v_shipment_id is null then
-        v_date_str := to_char(now(), 'YYYY-MM-DD');
-        select count(*) + 1 into v_seq
-          from public.shipments
-         where to_char(created_at, 'YYYY-MM-DD') = v_date_str;
-        v_code := 'SIUNTA-' || v_date_str || '-' || lpad(v_seq::text, 2, '0');
-        insert into public.shipments (code, status) values (v_code, 'open')
-          returning id into v_shipment_id;
-      end if;
-
-      new.shipment_id := v_shipment_id;
-    end if;
+  if new.status = 'closed' and old.status is distinct from 'closed' and new.packed_at is null then
+    new.packed_at := now();
   end if;
-
   return new;
 end;
-$$ language plpgsql security definer;
+$$ language plpgsql;
 
-drop trigger if exists pallets_auto_assign_shipment on public.pallets;
-create trigger pallets_auto_assign_shipment
+create trigger pallets_set_packed_at
   before update on public.pallets
-  for each row execute function public.auto_assign_shipment();
+  for each row execute function public.set_pallet_packed_at();
 
 -- ------------------------------------------------------------
 -- 10. Kiekio stulpelis items lentelėje
@@ -281,6 +253,7 @@ begin
   cascade;
 
   alter sequence public.pallets_number_seq restart with 1;
+  alter sequence public.pallets_number_other_seq restart with 1;
 
   return json_build_object('ok', true);
 end;
@@ -288,3 +261,211 @@ $$;
 
 revoke all on function public.reset_test_data() from public;
 grant execute on function public.reset_test_data() to anon, authenticated;
+
+-- ------------------------------------------------------------
+-- 13. Trigeris: siuntą pažymėjus išsiųsta → atstatyti paletžų numeraciją
+-- Dabar siunta sukuriama IŠKART su status='sent' (žr. 14 sekciją), todėl
+-- trigeris turi reaguoti ir į INSERT, ne tik UPDATE.
+-- (Naujai DB — čia; esamai DB naudoti migrate_reset_pallet_numbering.sql)
+-- ------------------------------------------------------------
+create or replace function public.reset_pallet_numbering_on_shipment_sent()
+returns trigger as $$
+begin
+  if tg_op = 'INSERT' then
+    if new.status = 'sent' then
+      alter sequence public.pallets_number_seq restart with 1;
+    end if;
+  elsif tg_op = 'UPDATE' then
+    if new.status = 'sent' and old.status is distinct from 'sent' then
+      alter sequence public.pallets_number_seq restart with 1;
+    end if;
+  end if;
+  return new;
+end;
+$$ language plpgsql security definer set search_path = public;
+
+drop trigger if exists shipments_reset_pallet_numbering on public.shipments;
+create trigger shipments_reset_pallet_numbering
+  after insert or update on public.shipments
+  for each row execute function public.reset_pallet_numbering_on_shipment_sent();
+
+-- ------------------------------------------------------------
+-- 14. Rankinis siuntų formavimas (front-end insert)
+-- Pastaba: shipments.shipment_id paletėms nebepriskiriamas automatiškai
+-- (žr. 9 sekcijos pakeitimą). "/paletes" puslapyje vartotojas pasirenka
+-- laukiančias (closed, shipment_id is null) paletes ir front-end kodas:
+--   1) insert į shipments (code, status='sent', sent_at=now()) — kodas
+--      generuojamas front-end pusėje pagal datą (pvz. "SIUNTA-2026-08-06",
+--      su skaitiniu priedu, jei tą dieną jau yra siuntų su tokiu kodu);
+--   2) update pallets set shipment_id = <naujas id> pažymėtoms paletėms.
+-- Jokios papildomos DB funkcijos šiam žingsniui nereikia — RLS politika
+-- "Anon and authenticated full access - shipments" (7 sekcija) jau leidžia
+-- šiuos insert/update veiksmus.
+-- ------------------------------------------------------------
+
+-- ------------------------------------------------------------
+-- 15. Paletžų PASKIRTIS (destination) — rankiniu būdu pasirenkama
+-- skenavimo puslapyje, visada tarp dviejų fiksuotų reikšmių: 'main'
+-- (įprastas sandėlis) / 'other' (kitas sandėlis). Kiekviena paskirtis
+-- turi savo NEPRIKLAUSOMĄ numeravimo sequence.
+-- (Naujai DB — čia; esamai DB naudoti migrate_add_destination.sql)
+-- ------------------------------------------------------------
+alter table public.pallets
+  add column if not exists destination text not null default 'main'
+  check (destination in ('main', 'other'));
+
+create sequence if not exists public.pallets_number_other_seq start 1;
+
+-- Perrašo 11 sekcijos set_pallet_number() — dabar renkasi sequence
+-- pagal paletės destination.
+create or replace function public.set_pallet_number()
+returns trigger as $$
+begin
+  if new.number is null then
+    if new.destination = 'other' then
+      new.number := nextval('public.pallets_number_other_seq');
+    else
+      new.number := nextval('public.pallets_number_seq');
+    end if;
+  end if;
+  new.code := 'PAL-' || new.number;
+  return new;
+end;
+$$ language plpgsql;
+
+-- ------------------------------------------------------------
+-- 16. Siuntos (shipments) taip pat gauna "destination" — kiekviena
+-- siunta apima TIK vienos paskirties paletes (tai užtikrina front-end),
+-- todėl reikšmė nustatoma kuriant shipments įrašą "/paletes" puslapyje.
+-- Numeracijos atstatymo trigeris (13 sekcija) perrašomas, kad
+-- atstatytų TIK tos pačios paskirties sequence.
+-- (Naujai DB — čia; esamai DB naudoti migrate_add_destination.sql)
+-- ------------------------------------------------------------
+alter table public.shipments
+  add column if not exists destination text not null default 'main'
+  check (destination in ('main', 'other'));
+
+create or replace function public.reset_pallet_numbering_on_shipment_sent()
+returns trigger as $$
+begin
+  if tg_op = 'INSERT' then
+    if new.status = 'sent' then
+      if new.destination = 'other' then
+        alter sequence public.pallets_number_other_seq restart with 1;
+      else
+        alter sequence public.pallets_number_seq restart with 1;
+      end if;
+    end if;
+  elsif tg_op = 'UPDATE' then
+    if new.status = 'sent' and old.status is distinct from 'sent' then
+      if new.destination = 'other' then
+        alter sequence public.pallets_number_other_seq restart with 1;
+      else
+        alter sequence public.pallets_number_seq restart with 1;
+      end if;
+    end if;
+  end if;
+  return new;
+end;
+$$ language plpgsql security definer set search_path = public;
+
+-- ------------------------------------------------------------
+-- 17. CATALOG — papildomi laukai: gamintojas ir įrankio tipas
+-- (Naujai DB — čia; esamai DB naudoti migrate_dynamic_destination.sql)
+-- ------------------------------------------------------------
+alter table public.catalog
+  add column if not exists manufacturer text,
+  add column if not exists item_type text;
+
+-- ------------------------------------------------------------
+-- 18. Dinaminė paletžų PASKIRTIS pagal gamintoją + tipą
+-- Paskirtis (destination) nebėra fiksuota 'main'/'other' — ji generuojama
+-- front-end pusėje kaip "<gamintojas>_<tipas>" (žr. src/lib/destination.js),
+-- arba 'unclassified', jei kataloge nerasta arba trūksta lauko. Kadangi
+-- kombinacijų gali daugėti be schema pakeitimų, numeravimas perkeliamas nuo
+-- Postgres sequence objektų (15/16 sekcijos) prie bendros counter lentelės,
+-- kurioje kiekviena unikali destination reikšmė turi savo eilutę.
+-- (Naujai DB — čia; esamai DB naudoti migrate_dynamic_destination.sql)
+-- ------------------------------------------------------------
+alter table public.pallets
+  drop constraint if exists pallets_destination_check,
+  alter column destination set default 'unclassified';
+
+alter table public.shipments
+  drop constraint if exists shipments_destination_check,
+  alter column destination set default 'unclassified';
+
+create table if not exists public.pallet_number_counters (
+  destination    text primary key,
+  current_number integer not null default 0
+);
+
+comment on table public.pallet_number_counters is
+  'Kiekvienos destination reikšmės dabartinis paletžų numeris. Naujos paskirtys atsiranda automatiškai per upsert, be schema pakeitimų.';
+
+alter table public.pallet_number_counters enable row level security;
+-- Jokių RLS policy nekuriame — lentelę valdo tik SECURITY DEFINER trigerio
+-- funkcijos žemiau (jos veikia savininko teisėmis ir apeina RLS); tiesioginė
+-- prieiga iš front-end (anon/authenticated) nenumatyta ir nereikalinga.
+
+-- Perrašo 15 sekcijos set_pallet_number() — vietoj nextval(sequence) naudoja
+-- atomišką upsert counter lentelėje, veikiantį bet kuriai destination reikšmei.
+create or replace function public.set_pallet_number()
+returns trigger as $$
+declare
+  v_number integer;
+begin
+  if new.number is null then
+    insert into public.pallet_number_counters (destination, current_number)
+    values (new.destination, 1)
+    on conflict (destination) do update
+      set current_number = public.pallet_number_counters.current_number + 1
+    returning current_number into v_number;
+
+    new.number := v_number;
+  end if;
+  new.code := 'PAL-' || new.number;
+  return new;
+end;
+$$ language plpgsql security definer set search_path = public;
+
+-- Perrašo 16 sekcijos reset_pallet_numbering_on_shipment_sent() — atstato
+-- TIK tos pačios destination eilutę counter lentelėje.
+create or replace function public.reset_pallet_numbering_on_shipment_sent()
+returns trigger as $$
+begin
+  if (tg_op = 'INSERT' and new.status = 'sent')
+     or (tg_op = 'UPDATE' and new.status = 'sent' and old.status is distinct from 'sent') then
+    update public.pallet_number_counters
+       set current_number = 0
+     where destination = new.destination;
+  end if;
+  return new;
+end;
+$$ language plpgsql security definer set search_path = public;
+
+-- Perrašo 12 sekcijos reset_test_data() — vietoj dviejų alter sequence,
+-- išvalo visą counter lentelę.
+create or replace function public.reset_test_data()
+returns json
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  truncate table
+    public.item_history,
+    public.items,
+    public.pallets,
+    public.shipments
+  cascade;
+
+  truncate table public.pallet_number_counters;
+
+  return json_build_object('ok', true);
+end;
+$$;
+
+-- Senos, nuo šiol nebenaudojamos sequence — numeravimas dabar per counter lentelę.
+drop sequence if exists public.pallets_number_seq;
+drop sequence if exists public.pallets_number_other_seq;

@@ -25,11 +25,23 @@ function columnLabel(index) {
   return label;
 }
 
+// Trim + mažosios raidės + diakritikų pašalinimas — antraštės atpažinimui
+// nepriklausomai nuo koduotės/rašybos variacijų (pvz. jei eksportas sugadina raides).
+function normalizeHeader(str) {
+  return String(str ?? "")
+    .normalize("NFD")
+    .replace(/\p{Diacritic}/gu, "")
+    .trim()
+    .toLowerCase();
+}
+
 export default function CatalogImport() {
   const [fileName, setFileName] = useState("");
   const [sheetRows, setSheetRows] = useState([]); // array-of-arrays, visos eilutės iš failo
   const [columnCount, setColumnCount] = useState(0);
   const [selectedColumn, setSelectedColumn] = useState("");
+  const [manufacturerColumn, setManufacturerColumn] = useState(""); // "" = nenaudojama
+  const [typeColumn, setTypeColumn] = useState(""); // "" = nenaudojama
   const [skipHeader, setSkipHeader] = useState(true);
   const [parseError, setParseError] = useState("");
   const [importing, setImporting] = useState(false);
@@ -42,6 +54,8 @@ export default function CatalogImport() {
     setParseError("");
     setResult(null);
     setSelectedColumn("");
+    setManufacturerColumn("");
+    setTypeColumn("");
     setFileName(file.name);
 
     try {
@@ -53,6 +67,14 @@ export default function CatalogImport() {
       setSheetRows(rows);
       setColumnCount(maxCols);
       if (maxCols > 0) setSelectedColumn("0");
+
+      // Bando atspėti Gamintojo/Tipo stulpelius pagal antraštės tekstą
+      const headerRow = rows[0] || [];
+      headerRow.forEach((cell, i) => {
+        const norm = normalizeHeader(cell);
+        if (norm === "gamintojas") setManufacturerColumn(String(i));
+        if (norm === "tipas") setTypeColumn(String(i));
+      });
     } catch (err) {
       setParseError(`Nepavyko nuskaityti failo: ${err.message}`);
       setSheetRows([]);
@@ -68,11 +90,16 @@ export default function CatalogImport() {
   const parsed = useMemo(() => {
     if (selectedColumn === "" || !dataRows.length) return [];
     const colIndex = Number(selectedColumn);
+    const mIndex = manufacturerColumn !== "" ? Number(manufacturerColumn) : null;
+    const tIndex = typeColumn !== "" ? Number(typeColumn) : null;
     return dataRows
-      .map((row) => row[colIndex])
-      .filter((cell) => String(cell ?? "").trim() !== "")
-      .map(parseCatalogLine);
-  }, [dataRows, selectedColumn]);
+      .filter((row) => String(row[colIndex] ?? "").trim() !== "")
+      .map((row) => ({
+        ...parseCatalogLine(row[colIndex]),
+        manufacturer: mIndex !== null ? String(row[mIndex] ?? "").trim() || null : null,
+        item_type: tIndex !== null ? String(row[tIndex] ?? "").trim() || null : null
+      }));
+  }, [dataRows, selectedColumn, manufacturerColumn, typeColumn]);
 
   const validEntries = useMemo(() => parsed.filter((p) => p.ian), [parsed]);
   const failedCount = parsed.length - validEntries.length;
@@ -85,9 +112,15 @@ export default function CatalogImport() {
     setResult(null);
 
     // Dedup pagal IAN failo viduje — paskutinis įrašas laimi.
+    // manufacturer/item_type raktai įtraukiami TIK jei atitinkamas stulpelis
+    // pasirinktas — taip pakartotinis importas be šių stulpelių neišvalo jau
+    // įrašytų reikšmių iki null.
     const byIan = new Map();
     for (const entry of validEntries) {
-      byIan.set(entry.ian, { ian: entry.ian, name: entry.name || null, raw_text: entry.raw });
+      const record = { ian: entry.ian, name: entry.name || null, raw_text: entry.raw };
+      if (manufacturerColumn !== "") record.manufacturer = entry.manufacturer;
+      if (typeColumn !== "") record.item_type = entry.item_type;
+      byIan.set(entry.ian, record);
     }
     const uniqueEntries = Array.from(byIan.values());
 
@@ -202,6 +235,49 @@ export default function CatalogImport() {
             </label>
           </div>
 
+          <div className="grid gap-3 sm:grid-cols-2">
+            <div>
+              <label className="mb-1 block text-xs font-semibold text-ink-600/70">
+                Gamintojo stulpelis (nebūtina)
+              </label>
+              <select
+                value={manufacturerColumn}
+                onChange={(e) => setManufacturerColumn(e.target.value)}
+                className="input-field"
+              >
+                <option value="">— Nenaudoti —</option>
+                {Array.from({ length: columnCount }, (_, i) => {
+                  const sample = String(sheetRows[0]?.[i] ?? "").slice(0, 40);
+                  return (
+                    <option key={i} value={i}>
+                      Stulpelis {columnLabel(i)} {sample && `— pvz.: "${sample}"`}
+                    </option>
+                  );
+                })}
+              </select>
+            </div>
+            <div>
+              <label className="mb-1 block text-xs font-semibold text-ink-600/70">
+                Tipo stulpelis (nebūtina)
+              </label>
+              <select
+                value={typeColumn}
+                onChange={(e) => setTypeColumn(e.target.value)}
+                className="input-field"
+              >
+                <option value="">— Nenaudoti —</option>
+                {Array.from({ length: columnCount }, (_, i) => {
+                  const sample = String(sheetRows[0]?.[i] ?? "").slice(0, 40);
+                  return (
+                    <option key={i} value={i}>
+                      Stulpelis {columnLabel(i)} {sample && `— pvz.: "${sample}"`}
+                    </option>
+                  );
+                })}
+              </select>
+            </div>
+          </div>
+
           <div className="flex flex-wrap gap-4 text-sm text-ink-600/70">
             <span>
               Iš viso eilučių: <strong className="text-ink-900">{parsed.length}</strong>
@@ -222,6 +298,12 @@ export default function CatalogImport() {
                     <tr>
                       <th className="px-4 py-2.5 font-semibold">Aptiktas IAN</th>
                       <th className="px-4 py-2.5 font-semibold">Pavadinimas</th>
+                      {manufacturerColumn !== "" && (
+                        <th className="px-4 py-2.5 font-semibold">Gamintojas</th>
+                      )}
+                      {typeColumn !== "" && (
+                        <th className="px-4 py-2.5 font-semibold">Tipas</th>
+                      )}
                       <th className="px-4 py-2.5 font-semibold">Originalus tekstas</th>
                     </tr>
                   </thead>
@@ -232,6 +314,12 @@ export default function CatalogImport() {
                           {row.ian || "—"}
                         </td>
                         <td className="px-4 py-2.5 text-ink-800">{row.name || "—"}</td>
+                        {manufacturerColumn !== "" && (
+                          <td className="px-4 py-2.5 text-ink-800">{row.manufacturer || "—"}</td>
+                        )}
+                        {typeColumn !== "" && (
+                          <td className="px-4 py-2.5 text-ink-800">{row.item_type || "—"}</td>
+                        )}
                         <td className="px-4 py-2.5 text-ink-600/60">{row.raw}</td>
                       </tr>
                     ))}
