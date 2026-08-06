@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { ArrowLeft, Loader2, X, Plus } from "lucide-react";
+import { ArrowLeft, Loader2, X } from "lucide-react";
 import { supabase } from "../lib/supabaseClient";
 import StatusBadge from "../components/StatusBadge";
 import { PALLET_STATUSES, ITEM_STATUSES } from "../lib/constants";
@@ -10,20 +10,15 @@ export default function PalletDetail() {
   const navigate = useNavigate();
   const [pallet, setPallet] = useState(null);
   const [items, setItems] = useState([]);
-  const [available, setAvailable] = useState([]);
-  const [addIan, setAddIan] = useState("");
   const [loading, setLoading] = useState(true);
-  const [addError, setAddError] = useState("");
 
   useEffect(() => {
     load();
-
     const channel = supabase
       .channel(`pallet-${id}`)
       .on("postgres_changes", { event: "*", schema: "public", table: "items" }, load)
       .on("postgres_changes", { event: "*", schema: "public", table: "pallets" }, load)
       .subscribe();
-
     return () => supabase.removeChannel(channel);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
@@ -33,9 +28,9 @@ export default function PalletDetail() {
     const { data: p } = await supabase.from("pallets").select("*").eq("id", id).single();
     const { data: its } = await supabase
       .from("items")
-      .select("id, ian, name, status")
+      .select("id, ian, name, status, quantity")
       .eq("pallet_id", id)
-      .order("created_at", { ascending: false });
+      .order("updated_at", { ascending: false });
     setPallet(p);
     setItems(its || []);
     setLoading(false);
@@ -43,37 +38,22 @@ export default function PalletDetail() {
 
   async function handleStatusChange(status) {
     await supabase.from("pallets").update({ status }).eq("id", id);
-  }
-
-  async function handleAddByIan(e) {
-    e.preventDefault();
-    setAddError("");
-    if (!addIan.trim()) return;
-
-    const { data: found, error } = await supabase
-      .from("items")
-      .select("id, pallet_id")
-      .eq("ian", addIan.trim())
-      .maybeSingle();
-
-    if (error || !found) {
-      setAddError("Prekė su tokiu IAN kodu nerasta.");
-      return;
+    if (status === "closed") {
+      const { data: updated } = await supabase
+        .from("pallets")
+        .select("number, shipments(code)")
+        .eq("id", id)
+        .single();
+      const palletLbl = updated?.number ? `${updated.number} paletė` : "paletė";
+      const shipmentCode = updated?.shipments?.code || "naują siuntą";
+      navigate("/paletes", {
+        state: { closedMessage: `${palletLbl} uždaryta ir priskirta siuntai ${shipmentCode}` }
+      });
     }
-    if (found.pallet_id) {
-      setAddError("Ši prekė jau priskirta kitai paletei.");
-      return;
-    }
-
-    await supabase
-      .from("items")
-      .update({ pallet_id: id, status: "packed" })
-      .eq("id", found.id);
-    setAddIan("");
   }
 
   async function handleRemove(itemId) {
-    await supabase.from("items").update({ pallet_id: null, status: "checked" }).eq("id", itemId);
+    await supabase.from("items").update({ pallet_id: null, status: "registered" }).eq("id", itemId);
   }
 
   if (loading || !pallet) {
@@ -83,6 +63,9 @@ export default function PalletDetail() {
       </div>
     );
   }
+
+  const palletLabel = pallet.number ? `${pallet.number} paletė` : pallet.code;
+  const totalQty = items.reduce((s, i) => s + (i.quantity || 1), 0);
 
   return (
     <div className="space-y-5">
@@ -95,8 +78,10 @@ export default function PalletDetail() {
 
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h1 className="font-mono text-xl font-bold text-ink-900 lg:text-2xl">{pallet.code}</h1>
-          <p className="mt-1 text-sm text-ink-600/70">{items.length} prekės(-ių) paletėje</p>
+          <h1 className="text-xl font-bold text-ink-900 lg:text-2xl">{palletLabel}</h1>
+          <p className="mt-1 text-sm text-ink-600/70">
+            {totalQty} vnt. ({items.length} modelių) paletėje
+          </p>
         </div>
         <select
           value={pallet.status}
@@ -111,19 +96,6 @@ export default function PalletDetail() {
         </select>
       </div>
 
-      <form onSubmit={handleAddByIan} className="panel flex flex-col gap-2 p-4 sm:flex-row sm:items-center">
-        <input
-          value={addIan}
-          onChange={(e) => setAddIan(e.target.value)}
-          placeholder="Įveskite / nuskenuokite IAN kodą, kad pridėtumėte prie paletės"
-          className="input-field flex-1 font-mono"
-        />
-        <button type="submit" className="btn-primary">
-          <Plus size={16} /> Pridėti
-        </button>
-      </form>
-      {addError && <p className="text-sm font-medium text-signal-red">{addError}</p>}
-
       <div className="panel divide-y divide-ink-900/5">
         {items.length === 0 ? (
           <p className="p-6 text-center text-sm text-ink-600/50">Prekių dar nepridėta.</p>
@@ -135,6 +107,7 @@ export default function PalletDetail() {
                 {item.name && <p className="text-xs text-ink-600/60">{item.name}</p>}
               </div>
               <div className="flex items-center gap-3">
+                <span className="text-xs font-medium text-ink-600/50">{item.quantity || 1} vnt.</span>
                 <StatusBadge list={ITEM_STATUSES} value={item.status} />
                 <button
                   onClick={() => handleRemove(item.id)}

@@ -2,9 +2,9 @@ import { NavLink, Outlet } from "react-router-dom";
 import { ScanLine, Table2, PackageSearch, Boxes } from "lucide-react";
 
 const NAV_ITEMS = [
-  { to: "/", label: "Skenavimas", icon: ScanLine, end: true },
-  { to: "/prekes", label: "Prekių lentelė", icon: Table2 },
-  { to: "/paletes", label: "Paletės / siuntos", icon: Boxes }
+  { to: "/",        label: "Skenavimas",    icon: ScanLine, end: true },
+  { to: "/prekes",  label: "Prekių lentelė", icon: Table2 },
+  { to: "/paletes", label: "Paletės",        icon: Boxes }
 ];
 
 function NavItems({ orientation }) {

@@ -7,6 +7,12 @@ export const ITEM_STATUSES = [
   { value: "rejected", label: "Atmesta", color: "red" }
 ];
 
+// Siuntos būsenos
+export const SHIPMENT_STATUSES = [
+  { value: "open",  label: "Aktyvi",    color: "amber" },
+  { value: "sent",  label: "Išsiųsta",  color: "teal"  }
+];
+
 // Paletės / siuntos būsenos
 export const PALLET_STATUSES = [
   { value: "open", label: "Formuojama", color: "amber" },

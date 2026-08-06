@@ -5,6 +5,7 @@ import ItemsTable from "./pages/ItemsTable";
 import Pallets from "./pages/Pallets";
 import PalletDetail from "./pages/PalletDetail";
 import CatalogImport from "./pages/CatalogImport";
+import AdminReset from "./pages/AdminReset";
 
 export default function App() {
   return (
@@ -14,8 +15,9 @@ export default function App() {
         <Route path="/prekes" element={<ItemsTable />} />
         <Route path="/paletes" element={<Pallets />} />
         <Route path="/paletes/:id" element={<PalletDetail />} />
-        {/* Administracinis puslapis — tik tiesioginiu adresu, be nuorodos navigacijoje */}
+        {/* Administraciniai puslapiai — tik tiesioginiu adresu, be nuorodos navigacijoje */}
         <Route path="/katalogas" element={<CatalogImport />} />
+        <Route path="/admin-reset" element={<AdminReset />} />
       </Route>
     </Routes>
   );

@@ -33,7 +33,7 @@ export default function ItemsTable() {
     setLoading(true);
     const { data } = await supabase
       .from("items")
-      .select("id, ian, name, category, status, notes, pallet_id, created_at")
+      .select("id, ian, name, category, status, notes, pallet_id, quantity, created_at")
       .order("created_at", { ascending: false });
     setItems(data || []);
     setLoading(false);
@@ -66,10 +66,10 @@ export default function ItemsTable() {
   }
 
   async function handleSave(updated) {
-    const { id, ian, name, category, status, notes, pallet_id } = updated;
+    const { id, ian, name, category, status, notes, pallet_id, quantity } = updated;
     await supabase
       .from("items")
-      .update({ ian, name, category, status, notes, pallet_id: pallet_id || null })
+      .update({ ian, name, category, status, notes, pallet_id: pallet_id || null, quantity: Number(quantity) || 1 })
       .eq("id", id);
     setEditing(null);
   }
@@ -119,6 +119,7 @@ export default function ItemsTable() {
                 <th className="px-4 py-3 font-semibold">IAN</th>
                 <th className="px-4 py-3 font-semibold">Pavadinimas</th>
                 <th className="px-4 py-3 font-semibold">Kategorija</th>
+                <th className="px-4 py-3 font-semibold">Kiekis</th>
                 <th className="px-4 py-3 font-semibold">Būsena</th>
                 <th className="px-4 py-3 font-semibold">Paletė</th>
                 <th className="px-4 py-3 font-semibold text-right">Veiksmai</th>
@@ -143,6 +144,7 @@ export default function ItemsTable() {
                     <td className="px-4 py-3 font-mono font-medium text-ink-900">{item.ian}</td>
                     <td className="px-4 py-3 text-ink-800">{item.name || "—"}</td>
                     <td className="px-4 py-3 text-ink-600/70">{item.category || "—"}</td>
+                    <td className="px-4 py-3 font-mono text-sm text-ink-800">{item.quantity ?? 1}</td>
                     <td className="px-4 py-3">
                       <StatusBadge list={ITEM_STATUSES} value={item.status} />
                     </td>
@@ -238,6 +240,16 @@ function EditModal({ item, pallets, onClose, onSave }) {
                 className="input-field"
               />
             </div>
+          </div>
+          <div>
+            <label className="mb-1 block text-xs font-semibold text-ink-600/70">Kiekis</label>
+            <input
+              type="number"
+              min={1}
+              value={form.quantity ?? 1}
+              onChange={(e) => setForm({ ...form, quantity: e.target.value })}
+              className="input-field"
+            />
           </div>
           <div className="grid grid-cols-2 gap-3">
             <div>

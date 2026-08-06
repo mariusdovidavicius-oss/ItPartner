@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { ScanLine, CheckCircle2, AlertCircle, Loader2 } from "lucide-react";
+import { ScanLine, CheckCircle2, AlertCircle, Loader2, PackageCheck } from "lucide-react";
 import { supabase } from "../lib/supabaseClient";
 
 export default function ScanEntry() {
@@ -8,17 +8,21 @@ export default function ScanEntry() {
   const [category, setCategory] = useState("");
   const [notes, setNotes] = useState("");
   const [saving, setSaving] = useState(false);
-  const [feedback, setFeedback] = useState(null); // { type: 'ok' | 'error', message }
-  const [recent, setRecent] = useState([]);
+  const [feedback, setFeedback] = useState(null); // { type, message }
   const [catalogNotFound, setCatalogNotFound] = useState(false);
+  const [openPallet, setOpenPallet] = useState(undefined); // undefined = kraunama, null = nėra
+  const [palletItemCount, setPalletItemCount] = useState(0);
+  const [palletItems, setPalletItems] = useState([]); // items dabartinėje paletėje
+  const [closing, setClosing] = useState(false);
+  const [closeMsg, setCloseMsg] = useState("");
   const inputRef = useRef(null);
 
   useEffect(() => {
     inputRef.current?.focus();
-    loadRecent();
+    loadOpenPallet();
   }, []);
 
-  // Ieško IAN kodo kataloge (su debounce) ir automatiškai užpildo pavadinimą, jei randama.
+  // Ieško IAN kodo kataloge (su debounce) ir automatiškai užpildo pavadinimą.
   useEffect(() => {
     const trimmed = ian.trim();
     if (!trimmed) {
@@ -41,60 +45,181 @@ export default function ScanEntry() {
     return () => clearTimeout(handle);
   }, [ian]);
 
-  async function loadRecent() {
-    const { data } = await supabase
-      .from("items")
-      .select("id, ian, name, status, created_at")
+  // Vienintelė duomenų užkrovimo funkcija — kraunama pati paletė IR jos items kartu.
+  async function loadOpenPallet() {
+    const { data: pallet } = await supabase
+      .from("pallets")
+      .select("id, code, number")
+      .eq("status", "open")
       .order("created_at", { ascending: false })
-      .limit(6);
-    setRecent(data || []);
+      .limit(1)
+      .maybeSingle();
+
+    setOpenPallet(pallet ?? null);
+
+    if (pallet) {
+      const { data: items } = await supabase
+        .from("items")
+        .select("id, ian, name, quantity, updated_at")
+        .eq("pallet_id", pallet.id)
+        .order("updated_at", { ascending: false });
+      const list = items || [];
+      const total = list.reduce((s, i) => s + (i.quantity || 1), 0);
+      setPalletItemCount(total);
+      setPalletItems(list);
+    } else {
+      setPalletItemCount(0);
+      setPalletItems([]);
+    }
+  }
+
+  async function handleClose() {
+    if (!openPallet) return;
+    setClosing(true);
+    setCloseMsg("");
+    const palletLabel = openPallet.number ? `${openPallet.number} paletė` : openPallet.code;
+    await supabase.from("pallets").update({ status: "closed" }).eq("id", openPallet.id);
+    setCloseMsg(`${palletLabel} išvežta į sandėlį`);
+    setClosing(false);
+    loadOpenPallet(); // naujos atviros paletės nėra → sąrašas išsivalo
   }
 
   async function handleSubmit(e) {
     e.preventDefault();
-    if (!ian.trim()) return;
+    const trimmedIan = ian.trim();
+    if (!trimmedIan) return;
     setSaving(true);
     setFeedback(null);
+    setCloseMsg("");
 
-    const { error } = await supabase.from("items").insert({
-      ian: ian.trim(),
-      name: name.trim() || null,
-      category: category.trim() || null,
-      notes: notes.trim() || null,
-      status: "registered"
-    });
+    let currentPallet = openPallet;
+
+    if (!currentPallet) {
+      // Auto-sukurti naują paletę (number ir code nustato DB trigeris)
+      const { data: newPallet, error: createError } = await supabase
+        .from("pallets")
+        .insert({ status: "open" })
+        .select("id, code, number")
+        .single();
+
+      if (createError) {
+        setSaving(false);
+        setFeedback({ type: "error", message: `Klaida kuriant paletę: ${createError.message}` });
+        inputRef.current?.focus();
+        return;
+      }
+      currentPallet = newPallet;
+    }
+
+    const palletLabel = currentPallet.number
+      ? `${currentPallet.number} paletė`
+      : currentPallet.code;
+
+    // Ieškoti to paties IAN šioje paletėje
+    const { data: existing } = await supabase
+      .from("items")
+      .select("id, quantity")
+      .eq("ian", trimmedIan)
+      .eq("pallet_id", currentPallet.id)
+      .maybeSingle();
+
+    let feedbackMsg = "";
+    let hasError = false;
+
+    if (existing) {
+      const newQty = existing.quantity + 1;
+      const { error } = await supabase
+        .from("items")
+        .update({ quantity: newQty })
+        .eq("id", existing.id);
+      if (error) {
+        hasError = true;
+        feedbackMsg = `Klaida atnaujinant: ${error.message}`;
+      } else {
+        feedbackMsg = `Užregistruota: ${trimmedIan} (dabar ${newQty} vnt. — ${palletLabel})`;
+      }
+    } else {
+      const { error } = await supabase.from("items").insert({
+        ian: trimmedIan,
+        name: name.trim() || null,
+        category: category.trim() || null,
+        notes: notes.trim() || null,
+        status: "packed",
+        pallet_id: currentPallet.id,
+        quantity: 1
+      });
+      if (error) {
+        hasError = true;
+        feedbackMsg = `Klaida įrašant: ${error.message}`;
+      } else {
+        feedbackMsg = `Užregistruota: ${trimmedIan} (1 vnt. — ${palletLabel})`;
+      }
+    }
 
     setSaving(false);
 
-    if (error) {
-      const isDuplicate = error.code === "23505";
-      setFeedback({
-        type: "error",
-        message: isDuplicate
-          ? `IAN kodas „${ian}“ jau užregistruotas.`
-          : `Klaida įrašant: ${error.message}`
-      });
+    if (hasError) {
+      setFeedback({ type: "error", message: feedbackMsg });
     } else {
-      setFeedback({ type: "ok", message: `Užregistruota: ${ian}` });
+      setFeedback({ type: "ok", message: feedbackMsg });
       setIan("");
       setName("");
       setCategory("");
       setNotes("");
-      loadRecent();
+      loadOpenPallet(); // atnaujina ir kiekį, ir sąrašą
     }
     inputRef.current?.focus();
   }
 
+  const palletLabel = openPallet?.number
+    ? `${openPallet.number} paletė`
+    : openPallet?.code ?? "";
+
   return (
-    <div className="space-y-6">
+    <div className="space-y-5">
       <div>
-        <h1 className="text-xl font-bold text-ink-900 lg:text-2xl">Naujos prekės registravimas</h1>
+        <h1 className="text-xl font-bold text-ink-900 lg:text-2xl">Prekių registravimas</h1>
         <p className="mt-1 text-sm text-ink-600/70">
-          Nuskenuokite arba įveskite IAN kodą — skeneris veikia kaip klaviatūra, todėl laukas priims duomenis automatiškai.
+          Nuskenuokite IAN kodą — kiekvienas skenavimas prideda 1 vnt. į dabartinę paletę.
         </p>
       </div>
 
-      {/* Scanner terminal — signature element */}
+      {/* Dabartinės paletės indikatorius */}
+      <div className="panel flex flex-wrap items-center justify-between gap-3 p-4">
+        {openPallet === undefined ? (
+          <Loader2 className="animate-spin text-ink-600/40" size={18} />
+        ) : openPallet ? (
+          <>
+            <div>
+              <p className="text-[11px] font-mono uppercase tracking-widest text-ink-600/50">
+                Dabartinė paletė
+              </p>
+              <p className="mt-0.5 text-base font-bold text-ink-900">{palletLabel}</p>
+              <p className="text-xs text-ink-600/60">{palletItemCount} vnt. priskirta</p>
+            </div>
+            <div className="flex flex-col items-end gap-1.5">
+              {palletItemCount > 0 && (
+                <button onClick={handleClose} disabled={closing} className="btn-primary">
+                  {closing ? <Loader2 size={15} className="animate-spin" /> : <PackageCheck size={15} />}
+                  Išvežta į sandėlį
+                </button>
+              )}
+              {closeMsg && (
+                <span className="flex items-center gap-1 text-xs font-medium text-signal-teal">
+                  <CheckCircle2 size={13} />
+                  {closeMsg}
+                </span>
+              )}
+            </div>
+          </>
+        ) : (
+          <p className="text-sm text-ink-600/50">
+            Paletė bus sukurta automatiškai su pirmu skenavimu
+          </p>
+        )}
+      </div>
+
+      {/* Skenerio forma */}
       <form
         onSubmit={handleSubmit}
         className="rounded-2xl bg-ink-950 p-5 shadow-panel lg:p-6"
@@ -129,7 +254,7 @@ export default function ScanEntry() {
             />
             {catalogNotFound && (
               <p className="mt-1.5 text-xs text-signal-amber">
-                Nerasta kataloge - įveskite pavadinimą rankiniu būdu
+                Nerasta kataloge — įveskite pavadinimą rankiniu būdu
               </p>
             )}
           </div>
@@ -165,25 +290,25 @@ export default function ScanEntry() {
         </div>
       </form>
 
-      {/* Recent scans */}
+      {/* Dabartinės paletės turinys */}
       <div className="panel p-4 lg:p-5">
-        <h2 className="mb-3 text-sm font-semibold text-ink-800">Paskutiniai įrašai</h2>
-        {recent.length === 0 ? (
-          <p className="text-sm text-ink-600/60">Kol kas nieko neužregistruota.</p>
+        <h2 className="mb-3 text-sm font-semibold text-ink-800">Dabartinės paletės turinys</h2>
+        {palletItems.length === 0 ? (
+          <p className="text-sm text-ink-600/60">Paletė dar tuščia.</p>
         ) : (
           <ul className="divide-y divide-ink-900/5">
-            {recent.map((item) => (
+            {palletItems.map((item) => (
               <li key={item.id} className="flex items-center justify-between py-2.5">
                 <div>
                   <p className="font-mono text-sm font-medium text-ink-900">{item.ian}</p>
                   {item.name && <p className="text-xs text-ink-600/60">{item.name}</p>}
                 </div>
-                <span className="text-xs text-ink-600/50">
-                  {new Date(item.created_at).toLocaleTimeString("lt-LT", {
-                    hour: "2-digit",
-                    minute: "2-digit"
-                  })}
-                </span>
+                <div className="text-right">
+                  <p className="text-xs text-ink-600/50">
+                    {new Date(item.updated_at).toLocaleDateString("lt-LT")}
+                  </p>
+                  <p className="text-xs font-medium text-ink-600/40">{item.quantity ?? 1} vnt.</p>
+                </div>
               </li>
             ))}
           </ul>
