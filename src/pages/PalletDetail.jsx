@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { ArrowLeft, Loader2, X } from "lucide-react";
+import { ArrowLeft, Loader2, X, Save, CheckCircle2 } from "lucide-react";
 import { supabase } from "../lib/supabaseClient";
 import StatusBadge from "../components/StatusBadge";
 import { PALLET_STATUSES, ITEM_STATUSES } from "../lib/constants";
@@ -11,6 +11,9 @@ export default function PalletDetail() {
   const [pallet, setPallet] = useState(null);
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [notesDraft, setNotesDraft] = useState("");
+  const [savingNotes, setSavingNotes] = useState(false);
+  const [notesSaved, setNotesSaved] = useState(false);
 
   useEffect(() => {
     load();
@@ -32,8 +35,18 @@ export default function PalletDetail() {
       .eq("pallet_id", id)
       .order("updated_at", { ascending: false });
     setPallet(p);
+    setNotesDraft(p?.notes || "");
     setItems(its || []);
     setLoading(false);
+  }
+
+  async function handleSaveNotes() {
+    setSavingNotes(true);
+    setNotesSaved(false);
+    await supabase.from("pallets").update({ notes: notesDraft.trim() || null }).eq("id", id);
+    setSavingNotes(false);
+    setNotesSaved(true);
+    setTimeout(() => setNotesSaved(false), 3000);
   }
 
   async function handleStatusChange(status) {
@@ -93,6 +106,33 @@ export default function PalletDetail() {
             </option>
           ))}
         </select>
+      </div>
+
+      <div className="panel space-y-2 p-4 lg:p-5">
+        <label className="block text-xs font-semibold text-ink-600/70">Pastaba</label>
+        <textarea
+          value={notesDraft}
+          onChange={(e) => { setNotesDraft(e.target.value); setNotesSaved(false); }}
+          rows={3}
+          placeholder="Pastaba apie šią paletę (nebūtina)"
+          className="input-field resize-none"
+        />
+        <div className="flex items-center gap-3">
+          <button
+            type="button"
+            onClick={handleSaveNotes}
+            disabled={savingNotes || notesDraft === (pallet.notes || "")}
+            className="btn-secondary"
+          >
+            {savingNotes ? <Loader2 size={14} className="animate-spin" /> : <Save size={14} />}
+            Išsaugoti pastabą
+          </button>
+          {notesSaved && (
+            <span className="flex items-center gap-1.5 text-xs font-medium text-signal-teal">
+              <CheckCircle2 size={13} /> Išsaugota
+            </span>
+          )}
+        </div>
       </div>
 
       <div className="panel divide-y divide-ink-900/5">

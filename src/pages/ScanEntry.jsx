@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import {
   ScanLine, CheckCircle2, AlertCircle, AlertTriangle, Loader2, PackageCheck,
-  ChevronDown, ChevronUp, Pencil, Trash2, X, Plus
+  ChevronDown, ChevronUp, Pencil, Trash2, X, Plus, Save
 } from "lucide-react";
 import { supabase } from "../lib/supabaseClient";
 import { computeDestination, prettifyDestination, UNCLASSIFIED } from "../lib/destination";
@@ -55,6 +55,8 @@ export default function ScanEntry() {
   const [editingItem, setEditingItem] = useState(null);
   const [deletingId, setDeletingId] = useState(null);
   const [deletingPalletId, setDeletingPalletId] = useState(null);
+  const [palletNotesDrafts, setPalletNotesDrafts] = useState({}); // pallet id -> juodraštis (nekeičiamas prilaike, kad neišsivalytų nebaigtas redagavimas per realtime reload)
+  const [savingPalletNotesId, setSavingPalletNotesId] = useState(null);
   const [loadingPallets, setLoadingPallets] = useState(true);
   const [closingId, setClosingId] = useState(null);
   const [closeMsg, setCloseMsg] = useState("");
@@ -169,13 +171,14 @@ export default function ScanEntry() {
     setLoadingPallets(true);
     const { data: pallets } = await supabase
       .from("pallets")
-      .select("id, code, number, destination")
+      .select("id, code, number, destination, notes")
       .eq("status", "open");
 
     const list = pallets || [];
     if (list.length === 0) {
       setOpenPallets([]);
       setItemsByPallet({});
+      setPalletNotesDrafts({});
       setLoadingPallets(false);
       return;
     }
@@ -200,7 +203,27 @@ export default function ScanEntry() {
 
     setOpenPallets(withQty);
     setItemsByPallet(itemsMap);
+
+    // Juodraštį inicijuojame TIK pirmą kartą pamačius paletę (ir pašaliname
+    // juodraščius nebeegzistuojančioms) — taip nebaigtas pastabos
+    // redagavimas neišsivalo, kai realtime įvykis (pvz. kitos paletės
+    // pakeitimas) sukelia šio sąrašo perkrovimą.
+    setPalletNotesDrafts((prev) => {
+      const next = {};
+      withQty.forEach((p) => {
+        next[p.id] = p.id in prev ? prev[p.id] : (p.notes || "");
+      });
+      return next;
+    });
+
     setLoadingPallets(false);
+  }
+
+  async function handleSavePalletNotes(palletId) {
+    setSavingPalletNotesId(palletId);
+    const value = palletNotesDrafts[palletId] || "";
+    await supabase.from("pallets").update({ notes: value.trim() || null }).eq("id", palletId);
+    setSavingPalletNotesId(null);
   }
 
   function toggleExpand(id) {
@@ -750,6 +773,31 @@ export default function ScanEntry() {
                         </button>
                       )}
                     </div>
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    <input
+                      value={palletNotesDrafts[p.id] ?? ""}
+                      onChange={(e) =>
+                        setPalletNotesDrafts((prev) => ({ ...prev, [p.id]: e.target.value }))
+                      }
+                      placeholder="Pastaba apie paletę (nebūtina)"
+                      className="input-field flex-1 py-2 text-xs"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => handleSavePalletNotes(p.id)}
+                      disabled={
+                        savingPalletNotesId === p.id ||
+                        (palletNotesDrafts[p.id] ?? "") === (p.notes || "")
+                      }
+                      className="btn-secondary shrink-0 px-2.5 py-2"
+                      aria-label="Išsaugoti pastabą"
+                    >
+                      {savingPalletNotesId === p.id
+                        ? <Loader2 size={14} className="animate-spin" />
+                        : <Save size={14} />}
+                    </button>
                   </div>
 
                   <button
