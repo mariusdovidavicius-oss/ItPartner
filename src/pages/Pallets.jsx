@@ -231,6 +231,18 @@ export default function Pallets() {
     return p.number ? `${p.number} paletė` : p.code;
   }
 
+  function splitDestination(destination) {
+    if (!destination || destination === UNCLASSIFIED) return { manufacturer: "Nepriskirta", itemType: "—" };
+    const idx = destination.indexOf("_");
+    if (idx === -1) return { manufacturer: destination, itemType: "—" };
+    const m = destination.slice(0, idx);
+    const t = destination.slice(idx + 1);
+    return {
+      manufacturer: m ? m.charAt(0).toUpperCase() + m.slice(1) : m,
+      itemType: t ? t.charAt(0).toUpperCase() + t.slice(1) : t,
+    };
+  }
+
   function formatDate(ts) {
     if (!ts) return "—";
     return new Date(ts).toLocaleDateString("lt-LT");
@@ -331,14 +343,8 @@ export default function Pallets() {
   // Uždarytą (closed) paletę pažymi kaip paruoštą išvežimui (ready) — tarpinis
   // žingsnis prieš realų priskyrimą siuntai. "packed_at" (uždarymo data)
   // NEKEIČIAMAS — jis jau užpildytas uždarant paletę.
-  // Atnaujinama PO VIENĄ paletę (ne viena bendra UPDATE visoms iš karto),
-  // sutvarkytas didėjančia darbinio numerio tvarka. Priežastis: DB pusėje
-  // "ready" eilės pozicija (žr. supabase/migrate_ready_position_renumbering.sql)
-  // priskiriama TA TVARKA, kuria duomenų bazė apdoroja eilutes — vienoje
-  // bendroje UPDATE komandoje ta tvarka NEBŪTINAI sutampa su paletžų senais
-  // numeriais, todėl pozicijos gali susimaišyti. Siunčiant atskirus,
-  // nuosekliai laukiamus (await) užklausimus tiksliai ta tvarka, kokia yra
-  // paletžų numeriai, garantuojama, kad "ready" pozicijos išeis nuosekliai.
+  // Keliama po vieną didėjančia closed numerio tvarka — taip DB trigeris
+  // priskiria ready pozicijas nuosekliai (1→6, 2→7, 3→8, o ne atsitiktine tvarka).
   async function handleMarkSelectedReady() {
     if (selectedClosedCount === 0) return;
     setMarkingReady(true);
@@ -350,10 +356,7 @@ export default function Pallets() {
     let errorMessage = "";
     for (const p of orderedPallets) {
       const { error } = await supabase.from("pallets").update({ status: "ready" }).eq("id", p.id);
-      if (error) {
-        errorMessage = error.message;
-        break;
-      }
+      if (error) { errorMessage = error.message; break; }
     }
 
     setMarkingReady(false);
@@ -523,14 +526,18 @@ export default function Pallets() {
                 <thead className="border-b border-ink-900/5 bg-ink-900/[0.02] text-xs uppercase tracking-wide text-ink-600/60">
                   <tr>
                     <th className="w-10 px-4 py-3"></th>
-                    <th className="px-4 py-3 font-semibold">Paletė</th>
+                    <th className="px-4 py-3 font-semibold">Nr.</th>
+                    <th className="px-4 py-3 font-semibold">Gamintojas</th>
+                    <th className="px-4 py-3 font-semibold">Tipas</th>
                     <th className="px-4 py-3 font-semibold">Uždarymo data</th>
                     <th className="px-4 py-3 font-semibold">Vnt.</th>
                     <th className="px-4 py-3 font-semibold"></th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-ink-900/5">
-                  {closedPalletsFiltered.map((p) => (
+                  {closedPalletsFiltered.map((p) => {
+                    const { manufacturer, itemType } = splitDestination(p.destination);
+                    return (
                     <tr
                       key={p.id}
                       className={selectedClosed.has(p.id) ? "bg-signal-orange/5" : "hover:bg-ink-900/[0.015]"}
@@ -544,10 +551,11 @@ export default function Pallets() {
                           className="h-4 w-4 rounded border-ink-700/30 text-signal-orange focus:ring-signal-orange/30"
                         />
                       </td>
-                      <td className="px-4 py-3 font-semibold text-ink-900">
-                        {palletLabel(p)}
-                        <DestinationBadge destination={p.destination} />
+                      <td className="px-4 py-3 font-bold text-ink-900">
+                        {p.number ?? "—"}
                       </td>
+                      <td className="px-4 py-3 text-ink-900">{manufacturer}</td>
+                      <td className="px-4 py-3 text-ink-600/80">{itemType}</td>
                       <td className="px-4 py-3 text-ink-600/70">{formatDate(p.packed_at)}</td>
                       <td className="px-4 py-3 font-mono text-ink-800">{quantities[p.id] || 0}</td>
                       <td className="px-4 py-3 text-right">
@@ -559,7 +567,8 @@ export default function Pallets() {
                         </Link>
                       </td>
                     </tr>
-                  ))}
+                    );
+                  })}
                 </tbody>
               </table>
             </div>

@@ -174,7 +174,7 @@ export default function PalletDetail() {
     );
   }
 
-  const palletLabel = pallet.number ? `${pallet.number} paletė` : pallet.code;
+  const palletLabel = pallet.number ? `${pallet.number} paletė` : (pallet.code || "Paletė");
   const totalQty = items.reduce((s, i) => s + (i.quantity || 1), 0);
 
   return (

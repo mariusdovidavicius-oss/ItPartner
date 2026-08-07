@@ -238,8 +238,15 @@ export default function ScanEntry() {
   async function handleClose(pallet) {
     setClosingId(pallet.id);
     setCloseMsg("");
-    const label = formatPalletLabel(pallet);
     await supabase.from("pallets").update({ status: "closed" }).eq("id", pallet.id);
+    const { data: updated } = await supabase
+      .from("pallets")
+      .select("number, destination")
+      .eq("id", pallet.id)
+      .single();
+    const label = updated?.number
+      ? `${updated.number} paletė — ${prettifyDestination(updated.destination)}`
+      : prettifyDestination(pallet.destination);
     setCloseMsg(`${label} išvežta į sandėlį`);
     setClosingId(null);
     loadOpenPallets();
@@ -746,7 +753,7 @@ export default function ScanEntry() {
                         {prettifyDestination(p.destination)}
                       </p>
                       <p className="text-xs text-ink-600/60">
-                        {p.number ? `${p.number} paletė` : p.code} &middot; {p.qty} vnt.
+                        Pildoma &middot; {p.qty} vnt.
                       </p>
                     </div>
                     <div className="flex shrink-0 flex-col items-stretch gap-1.5 sm:flex-row sm:items-center">
