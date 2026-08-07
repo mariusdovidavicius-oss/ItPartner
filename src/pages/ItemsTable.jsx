@@ -69,7 +69,11 @@ export default function ItemsTable() {
     const { id, ian, name, category, status, notes, pallet_id, quantity } = updated;
     await supabase
       .from("items")
-      .update({ ian, name, category, status, notes, pallet_id: pallet_id || null, quantity: Number(quantity) || 1 })
+      .update({
+        ian, name, category, status, notes,
+        pallet_id: pallet_id || null,
+        quantity: Math.max(1, Math.round(Number(quantity)) || 1)
+      })
       .eq("id", id);
     setEditing(null);
   }
@@ -128,13 +132,13 @@ export default function ItemsTable() {
             <tbody className="divide-y divide-ink-900/5">
               {loading ? (
                 <tr>
-                  <td colSpan={6} className="px-4 py-10 text-center text-ink-600/50">
+                  <td colSpan={7} className="px-4 py-10 text-center text-ink-600/50">
                     <Loader2 className="mx-auto animate-spin" size={20} />
                   </td>
                 </tr>
               ) : filtered.length === 0 ? (
                 <tr>
-                  <td colSpan={6} className="px-4 py-10 text-center text-ink-600/50">
+                  <td colSpan={7} className="px-4 py-10 text-center text-ink-600/50">
                     Rezultatų nerasta.
                   </td>
                 </tr>

@@ -81,7 +81,7 @@ begin
   end if;
   return new;
 end;
-$$ language plpgsql;
+$$ language plpgsql security definer set search_path = public;
 
 drop trigger if exists items_log_status_change on public.items;
 create trigger items_log_status_change
@@ -91,31 +91,37 @@ create trigger items_log_status_change
 -- ------------------------------------------------------------
 -- 4. ROW LEVEL SECURITY (RLS)
 -- ------------------------------------------------------------
--- Vidinei valdymo sistemai su prisijungusiais darbuotojais dažniausiai
--- pakanka leisti visus veiksmus autentifikuotiems (authenticated) vartotojams.
--- Jeigu programa naudos tik "anon" raktą be prisijungimo (pvz. uždaras vidinis
--- tinklas), pakeiskite "authenticated" į "anon" žemiau — bet tuomet
--- įsitikinkite, kad aplikacija nėra pasiekiama iš viešo interneto be apsaugos.
+-- Programa NENAUDOJA Supabase Auth (žr. src/lib/supabaseClient.js — visur
+-- tik VITE_SUPABASE_ANON_KEY, jokio supabase.auth iškvietimo), todėl KIEKVIENA
+-- užklausa vykdoma kaip "anon" rolė, niekada "authenticated". Todėl "anon"
+-- turi būti įtrauktas į kiekvienos lentelės, kurią naudoja front-end,
+-- politiką — priešingu atveju RLS tyliai blokuotų visus veiksmus.
+--
+-- SVARBU: kadangi "anon" reiškia BET KAS su anon raktu (t. y. bet kas, kas
+-- pasiekia aplikaciją), aplikacija NETURI būti pasiekiama iš viešo interneto
+-- be papildomos apsaugos (VPN, IP apribojimas ir pan.). Jei kada nors
+-- reikės realaus vartotojų atskyrimo/apskaitos, reikės pridėti Supabase Auth
+-- ir pakeisti "anon, authenticated" į vien "authenticated".
 
 alter table public.pallets enable row level security;
 alter table public.items enable row level security;
 alter table public.item_history enable row level security;
 
-create policy "Authenticated full access - pallets"
+create policy "Anon and authenticated full access - pallets"
   on public.pallets for all
-  to authenticated
+  to anon, authenticated
   using (true)
   with check (true);
 
-create policy "Authenticated full access - items"
+create policy "Anon and authenticated full access - items"
   on public.items for all
-  to authenticated
+  to anon, authenticated
   using (true)
   with check (true);
 
-create policy "Authenticated read access - item_history"
+create policy "Anon and authenticated read access - item_history"
   on public.item_history for select
-  to authenticated
+  to anon, authenticated
   using (true);
 
 -- ------------------------------------------------------------
@@ -142,9 +148,9 @@ create index if not exists catalog_ian_idx on public.catalog (ian);
 
 alter table public.catalog enable row level security;
 
-create policy "Authenticated full access - catalog"
+create policy "Anon and authenticated full access - catalog"
   on public.catalog for all
-  to authenticated
+  to anon, authenticated
   using (true)
   with check (true);
 

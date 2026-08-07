@@ -266,7 +266,7 @@ export default function ScanEntry() {
       .update({
         ian: form.ian.trim(),
         name: form.name.trim() || null,
-        quantity: Number(form.quantity) || 1,
+        quantity: Math.max(1, Math.round(Number(form.quantity)) || 1),
         notes: form.notes.trim() || null
       })
       .eq("id", itemId);
