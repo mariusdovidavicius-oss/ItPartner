@@ -222,12 +222,12 @@ export default function ScanEntry() {
     loadOpenPallets();
   }
 
-  // Tuščios (0 vnt.) paletės trynimas. Paskirties numeravimo skaitliuko
-  // sutvarkymas (perskaičiuojamas iš tikrų likusių paletžų, kad savaime
-  // pasitaisytų nuo bet kokios ankstesnės neatitikties) vyksta DB pusėje
-  // per BEFORE DELETE trigerį — žr. supabase/migrate_pallet_delete_counter.sql
-  // — todėl čia pakanka paprasto DELETE, lygiai taip pat, kaip trinama
-  // prekė iš /prekes puslapio.
+  // Tuščios (0 vnt.) paletės trynimas. Paletžų numeravimas skaičiuojamas
+  // "gyvai" (spragos paieška, žr. supabase/migrate_gap_fill_pallet_numbering.sql),
+  // todėl jokios papildomos skaitliuko korekcijos nebereikia — po ištrynimo
+  // atsilaisvinęs numeris tiesiog taps matoma spraga sekantį kartą. Čia
+  // pakanka paprasto DELETE, lygiai taip pat, kaip trinama prekė iš
+  // /prekes puslapio.
   async function handleDeletePallet(pallet) {
     const label = pallet.number ?? pallet.code;
     if (!confirm(`Ištrinti tuščią paletę Nr. ${label}? Šio veiksmo negalima atšaukti.`)) return;

@@ -302,21 +302,40 @@ export default function Pallets() {
   // Uždarytą (closed) paletę pažymi kaip paruoštą išvežimui (ready) — tarpinis
   // žingsnis prieš realų priskyrimą siuntai. "packed_at" (uždarymo data)
   // NEKEIČIAMAS — jis jau užpildytas uždarant paletę.
+  // Atnaujinama PO VIENĄ paletę (ne viena bendra UPDATE visoms iš karto),
+  // sutvarkytas didėjančia darbinio numerio tvarka. Priežastis: DB pusėje
+  // "ready" eilės pozicija (žr. supabase/migrate_ready_position_renumbering.sql)
+  // priskiriama TA TVARKA, kuria duomenų bazė apdoroja eilutes — vienoje
+  // bendroje UPDATE komandoje ta tvarka NEBŪTINAI sutampa su paletžų senais
+  // numeriais, todėl pozicijos gali susimaišyti. Siunčiant atskirus,
+  // nuosekliai laukiamus (await) užklausimus tiksliai ta tvarka, kokia yra
+  // paletžų numeriai, garantuojama, kad "ready" pozicijos išeis nuosekliai.
   async function handleMarkSelectedReady() {
     if (selectedClosedCount === 0) return;
     setMarkingReady(true);
 
-    const ids = Array.from(selectedClosed);
-    const { error } = await supabase.from("pallets").update({ status: "ready" }).in("id", ids);
+    const orderedPallets = closedPalletsFiltered
+      .filter((p) => selectedClosed.has(p.id))
+      .sort((a, b) => (a.number || 0) - (b.number || 0));
+
+    let errorMessage = "";
+    for (const p of orderedPallets) {
+      const { error } = await supabase.from("pallets").update({ status: "ready" }).eq("id", p.id);
+      if (error) {
+        errorMessage = error.message;
+        break;
+      }
+    }
 
     setMarkingReady(false);
 
-    if (error) {
-      setNotice(`Klaida žymint kaip paruoštą: ${error.message}`);
+    if (errorMessage) {
+      setNotice(`Klaida žymint kaip paruoštą: ${errorMessage}`);
+      load();
       return;
     }
 
-    setNotice(`${ids.length} paletė(-ių) pažymėta kaip paruošta išvežimui`);
+    setNotice(`${orderedPallets.length} paletė(-ių) pažymėta kaip paruošta išvežimui`);
     setSelectedClosed(new Set());
     load();
   }

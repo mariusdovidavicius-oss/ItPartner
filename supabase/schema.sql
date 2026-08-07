@@ -661,3 +661,89 @@ begin
   return json_build_object('ok', true);
 end;
 $$;
+
+-- ------------------------------------------------------------
+-- 22. "Laukia paruošimo" / "Formuojama" (open/closed) paletžų numeravimas
+-- PERTVARKOMAS iš skaitliuko (pallet_number_counters) į SPRAGOS PAIEŠKĄ
+-- "gyvai" kiekvieną kartą kuriant naują paletę.
+--
+-- Problema: skaitliukas TIK didėja ir atsistato ties "ready" pažymėjimu —
+-- jei pažymima TIK DALIS "Laukia paruošimo" paletžų kaip "ready" (pvz. iš
+-- 1,2,3 tik "2"), likusiame sąraše lieka spraga ("1, 3"), o skaitliukas jos
+-- "nemato" ir naujai paletei vis tiek duoda tęstinį (4, 5...) numerį, o ne
+-- užpildo spragą.
+--
+-- Sprendimas: numeris randamas GYVAI — mažiausias trūkstamas skaičius tarp
+-- esamų "open"/"closed" (dar nepriskirtų shipment'ui) paletžų tai
+-- paskirčiai; jei tokių nėra nė vienos — 1.
+--
+-- Kadangi numeris dabar visada apskaičiuojamas iš TIKROS, esamos būklės,
+-- šie mechanizmai tampa NEBEREIKALINGI ir PAŠALINAMI:
+--   - pallet_number_counters lentelė
+--   - reset_pallet_numbering_on_ready() (20 sekcija) — nereikalingas, nes
+--     "gyva" paieška pati automatiškai "mato", kai sąrašas ištuštėja
+--   - decrement_pallet_counter_on_delete() (19 sekcija) — nereikalingas,
+--     nes ištrintos paletės numeris tiesiog taps "matoma" spraga
+--
+-- NELIEČIAMA: pallet_ready_counters / assign_pallet_ready_position /
+-- reset_pallet_ready_position_on_sent (21 sekcija) — atskira sistema
+-- "ready" eilės pozicijai, su šia logika nesusijusi.
+-- (Naujai DB — čia; esamai DB naudoti migrate_gap_fill_pallet_numbering.sql)
+-- ------------------------------------------------------------
+drop trigger if exists pallets_decrement_counter_on_delete on public.pallets;
+drop function if exists public.decrement_pallet_counter_on_delete();
+
+drop trigger if exists pallets_reset_numbering_on_ready on public.pallets;
+drop function if exists public.reset_pallet_numbering_on_ready();
+
+create or replace function public.set_pallet_number()
+returns trigger as $$
+declare
+  v_number integer;
+begin
+  if new.number is null then
+    select coalesce(min(t.n), 1)
+      into v_number
+      from generate_series(1, (
+        select coalesce(max(number), 0) + 1
+          from public.pallets
+         where destination = new.destination
+           and status in ('open', 'closed')
+           and shipment_id is null
+      )) as t(n)
+     where not exists (
+       select 1 from public.pallets
+        where destination = new.destination
+          and status in ('open', 'closed')
+          and shipment_id is null
+          and number = t.n
+     );
+
+    new.number := v_number;
+  end if;
+  new.code := 'PAL-' || new.number;
+  return new;
+end;
+$$ language plpgsql security definer set search_path = public;
+
+drop table if exists public.pallet_number_counters;
+
+create or replace function public.reset_test_data()
+returns json
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  truncate table
+    public.item_history,
+    public.items,
+    public.pallets,
+    public.shipments
+  cascade;
+
+  truncate table public.pallet_ready_counters;
+
+  return json_build_object('ok', true);
+end;
+$$;
