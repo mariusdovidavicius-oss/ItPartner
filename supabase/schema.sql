@@ -13,7 +13,9 @@ create table if not exists public.pallets (
   id          uuid primary key default gen_random_uuid(),
   code        text not null,                   -- pvz. "PAL-2026-001" — NEBE unikalus, nes numeracija cikliškai atsistato po kiekvienos siuntos
   status      text not null default 'open'
-              check (status in ('open', 'closed', 'shipped', 'delivered')),
+              -- 'ready' = paruošta išvežimui (tarpinis žingsnis tarp 'closed'
+              -- ir realaus priskyrimo shipment'ui) — žr. migrate_add_ready_status.sql
+              check (status in ('open', 'closed', 'ready', 'shipped', 'delivered')),
   notes       text,
   created_at  timestamptz not null default now(),
   shipped_at  timestamptz
@@ -430,7 +432,9 @@ end;
 $$ language plpgsql security definer set search_path = public;
 
 -- Perrašo 16 sekcijos reset_pallet_numbering_on_shipment_sent() — atstato
--- TIK tos pačios destination eilutę counter lentelėje.
+-- TIK tos pačios destination eilutę counter lentelėje. Jei tos destination
+-- counter eilutės dar nebūtų (kraštutinis atvejis) — UPDATE nieko nepaveiktų
+-- ir tyliai nieko nepakeistų, todėl papildomai upsert'inama eilutė su 0.
 create or replace function public.reset_pallet_numbering_on_shipment_sent()
 returns trigger as $$
 begin
@@ -439,6 +443,10 @@ begin
     update public.pallet_number_counters
        set current_number = 0
      where destination = new.destination;
+
+    insert into public.pallet_number_counters (destination, current_number)
+    values (new.destination, 0)
+    on conflict (destination) do nothing;
   end if;
   return new;
 end;
@@ -469,3 +477,80 @@ $$;
 -- Senos, nuo šiol nebenaudojamos sequence — numeravimas dabar per counter lentelę.
 drop sequence if exists public.pallets_number_seq;
 drop sequence if exists public.pallets_number_other_seq;
+
+-- ------------------------------------------------------------
+-- 19. Trigeris: ištrynus TUŠČIĄ paletę (skenavimo puslapio mygtukas
+-- "Ištrinti paletę"), sutvarkyti jos paskirties numeravimo skaitliuką.
+-- Vietoj sąlyginio "-1" (kuris "įstringa", jei skaitliukas bent kartą
+-- išsiderina su realiais duomenimis) TIESIOGIAI PERSKAIČIUOJAMAS tikras
+-- maksimalus numeris tarp likusių, dar neišsiųstų (shipment_id is null)
+-- tos paskirties paletžų — savaime pasitaiso nepriklausomai nuo ankstesnės
+-- būklės. BEFORE DELETE trigeris pasirinktas vietoj atskiros RPC funkcijos,
+-- kad skaitliukas liktų teisingas nepriklausomai nuo to, iš kur paletė
+-- trinama — atitinka jau esamą trigerių pagrįstą numeravimo architektūrą
+-- (11/15/18 sekcijos).
+-- (Naujai DB — čia; esamai DB naudoti migrate_pallet_delete_counter.sql)
+-- ------------------------------------------------------------
+create or replace function public.decrement_pallet_counter_on_delete()
+returns trigger as $$
+declare
+  v_max_remaining integer;
+begin
+  select coalesce(max(number), 0)
+    into v_max_remaining
+    from public.pallets
+   where destination = old.destination
+     and id <> old.id
+     and shipment_id is null;
+
+  update public.pallet_number_counters
+     set current_number = v_max_remaining
+   where destination = old.destination;
+
+  return old;
+end;
+$$ language plpgsql security definer set search_path = public;
+
+drop trigger if exists pallets_decrement_counter_on_delete on public.pallets;
+create trigger pallets_decrement_counter_on_delete
+  before delete on public.pallets
+  for each row execute function public.decrement_pallet_counter_on_delete();
+
+-- ------------------------------------------------------------
+-- 20. Paletžų numeravimo atstatymas PERKELIAMAS iš "siunta pažymėta
+-- išsiųsta" (sent) momento į "paletė pažymėta paruošta išvežimui" (ready)
+-- momentą — sąmoningas pasirinkimas: kai visos vienos paskirties paletės
+-- jau "ready", sekanti nauja paletė turi pradėti numeraciją iš naujo,
+-- NELAUKIANT realaus išvežimo. Tai reiškia, kad tuo pačiu metu gali būti
+-- dvi paletės su tuo pačiu numeriu (viena "ready", laukianti pasiėmimo,
+-- kita "open", dar pildoma) — tai priimta rizika, ne klaida.
+--
+-- 13/16/18 sekcijų "shipments_reset_pallet_numbering" trigeris PANAIKINAMAS:
+-- jei jis liktų, vėliau pažymint siuntą "sent" jis klaidingai nunulintų
+-- skaitliuką jau NAUJAM ciklui, kuris tarp "ready" ir realaus "sent" spėjo
+-- prasidėti — t. y. ištrintų jau sunumeruotų naujų paletžų progresą.
+-- (Naujai DB — čia; esamai DB naudoti migrate_reset_numbering_on_ready.sql)
+-- ------------------------------------------------------------
+drop trigger if exists shipments_reset_pallet_numbering on public.shipments;
+drop function if exists public.reset_pallet_numbering_on_shipment_sent();
+
+create or replace function public.reset_pallet_numbering_on_ready()
+returns trigger as $$
+begin
+  if new.status = 'ready' and old.status is distinct from 'ready' then
+    update public.pallet_number_counters
+       set current_number = 0
+     where destination = new.destination;
+
+    insert into public.pallet_number_counters (destination, current_number)
+    values (new.destination, 0)
+    on conflict (destination) do nothing;
+  end if;
+  return new;
+end;
+$$ language plpgsql security definer set search_path = public;
+
+drop trigger if exists pallets_reset_numbering_on_ready on public.pallets;
+create trigger pallets_reset_numbering_on_ready
+  after update on public.pallets
+  for each row execute function public.reset_pallet_numbering_on_ready();

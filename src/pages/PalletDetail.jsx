@@ -46,7 +46,7 @@ export default function PalletDetail() {
         .single();
       const palletLbl = updated?.number ? `${updated.number} paletė` : "Paletė";
       navigate("/paletes", {
-        state: { closedMessage: `${palletLbl} uždaryta ir laukia išvežimo` }
+        state: { closedMessage: `${palletLbl} uždaryta ir laukia paruošimo` }
       });
     }
   }

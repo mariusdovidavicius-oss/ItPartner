@@ -17,7 +17,8 @@ export const SHIPMENT_STATUSES = [
 export const PALLET_STATUSES = [
   { value: "open", label: "Formuojama", color: "amber" },
   { value: "closed", label: "Uždaryta", color: "blue" },
-  { value: "shipped", label: "Išsiųsta", color: "teal" },
+  { value: "ready", label: "Paruošta išvežimui", color: "teal" },
+  { value: "shipped", label: "Išsiųsta", color: "ink" },
   { value: "delivered", label: "Pristatyta", color: "ink" }
 ];
 

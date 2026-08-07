@@ -1,12 +1,43 @@
 import { useEffect, useRef, useState } from "react";
-import { ScanLine, CheckCircle2, AlertCircle, AlertTriangle, Loader2, PackageCheck } from "lucide-react";
+import {
+  ScanLine, CheckCircle2, AlertCircle, AlertTriangle, Loader2, PackageCheck,
+  ChevronDown, ChevronUp, Pencil, Trash2, X, Plus
+} from "lucide-react";
 import { supabase } from "../lib/supabaseClient";
 import { computeDestination, prettifyDestination, UNCLASSIFIED } from "../lib/destination";
+
+// Leistini gamintojo -> tipo deriniai rankiniam naujo įrankio įvedimui.
+// Reikšmės TIKSLIAI atitinka jau naudojamas catalog.manufacturer/item_type
+// reikšmes, kad naujas įrašas patektų į tą pačią destination grupavimo logiką.
+const MANUFACTURER_TYPES = {
+  Grizzly: ["Prietaisai", "Bat"],
+  Kompernass: ["Prietaisai", "Prietaisai2", "Bat"]
+};
 
 function formatPalletLabel(pallet) {
   if (!pallet) return "";
   const base = pallet.number ? `${pallet.number} paletė` : pallet.code;
   return `${base} — ${prettifyDestination(pallet.destination)}`;
+}
+
+// Ta pati regex logika, kuri naudojama src/pages/CatalogImport.jsx —
+// IAN yra skaičius skliausteliuose teksto gale, likusi dalis yra pavadinimas.
+function parseManualEntry(raw) {
+  const text = String(raw ?? "").trim();
+  if (!text) return { ian: null, name: null };
+  const match = text.match(/^(.*)\((\d+)\)\s*$/);
+  if (!match) return { ian: null, name: null };
+  return { ian: match[2].trim(), name: match[1].trim() };
+}
+
+function formatDateTime(ts) {
+  if (!ts) return "—";
+  return new Date(ts).toLocaleString("lt-LT");
+}
+
+// Apsaugo nuo netyčinio ILIKE wildcard elgesio, jei pavadinime yra % arba _.
+function escapeLike(str) {
+  return str.replace(/[%_]/g, (c) => `\\${c}`);
 }
 
 export default function ScanEntry() {
@@ -18,21 +49,66 @@ export default function ScanEntry() {
   const [feedback, setFeedback] = useState(null); // { type: 'ok'|'warn'|'error', message }
   const [catalogNotFound, setCatalogNotFound] = useState(false);
   const [previewUnclassified, setPreviewUnclassified] = useState(false);
-  const [openPallets, setOpenPallets] = useState([]); // atviros paletės su >0 prekių, sugrupuotos pagal destination
+  const [openPallets, setOpenPallets] = useState([]); // visos atviros paletės, sugrupuotos pagal destination (įsk. tuščias — jas reikia matyti, kad būtų galima ištrinti)
+  const [itemsByPallet, setItemsByPallet] = useState({}); // pallet id -> pilnas items sąrašas (peržiūrai/redagavimui)
+  const [expandedIds, setExpandedIds] = useState(new Set()); // kurios paletės kortelės išskleistos
+  const [editingItem, setEditingItem] = useState(null);
+  const [deletingId, setDeletingId] = useState(null);
+  const [deletingPalletId, setDeletingPalletId] = useState(null);
   const [loadingPallets, setLoadingPallets] = useState(true);
   const [closingId, setClosingId] = useState(null);
   const [closeMsg, setCloseMsg] = useState("");
+
+  // Registravimo režimas: "ian" (skenavimas), "name" (paieška pagal
+  // pavadinimą, kai fizinė etiketė neįskaitoma / nėra) arba "manual"
+  // (naujo, kataloge dar neregistruoto įrankio įvedimas rankiniu būdu).
+  const [mode, setMode] = useState("ian");
+  const [nameQuery, setNameQuery] = useState("");
+  const [nameResults, setNameResults] = useState([]);
+  const [searchingName, setSearchingName] = useState(false);
+
+  const [manualText, setManualText] = useState("");
+  const [manualManufacturer, setManualManufacturer] = useState("");
+  const [manualItemType, setManualItemType] = useState("");
+  const [manualError, setManualError] = useState("");
+
   const inputRef = useRef(null);
+  const nameInputRef = useRef(null);
+  const manualInputRef = useRef(null);
 
   useEffect(() => {
     inputRef.current?.focus();
     loadOpenPallets();
+
+    // Realtime: kito įrenginio/lango atliktas prekės ar paletės pakeitimas
+    // taip pat turi atsispindėti čia (pvz. redagavimas iš /prekes puslapio).
+    const channel = supabase
+      .channel("scan-entry-open-pallets")
+      .on("postgres_changes", { event: "*", schema: "public", table: "items" }, loadOpenPallets)
+      .on("postgres_changes", { event: "*", schema: "public", table: "pallets" }, loadOpenPallets)
+      .subscribe();
+
+    return () => supabase.removeChannel(channel);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Perkeliant fokusą į aktyvaus režimo lauką (patogu ir keičiant režimą, ir
+  // registruojant kelis be-IAN įrankius iš eilės paieškos režime).
+  useEffect(() => {
+    if (mode === "ian") inputRef.current?.focus();
+    else if (mode === "name") nameInputRef.current?.focus();
+    else manualInputRef.current?.focus();
+  }, [mode]);
 
   // Ieško IAN kodo kataloge (su debounce), automatiškai užpildo pavadinimą ir
   // rodo gyvą paskirties peržiūrą (tik UI patogumui — autoritetinga paieška
-  // vyksta iš naujo handleSubmit metu, žr. komentarą ten).
+  // vyksta iš naujo registerItem metu, žr. komentarą ten).
   useEffect(() => {
+    if (mode !== "ian") {
+      setCatalogNotFound(false);
+      setPreviewUnclassified(false);
+      return;
+    }
     const trimmed = ian.trim();
     if (!trimmed) {
       setCatalogNotFound(false);
@@ -54,9 +130,41 @@ export default function ScanEntry() {
       setPreviewUnclassified(computeDestination(data?.manufacturer, data?.item_type) === UNCLASSIFIED);
     }, 400);
     return () => clearTimeout(handle);
-  }, [ian]);
+  }, [ian, mode]);
 
-  // Kraunamos visos status='open' paletės su >0 prekių, sugrupuotos pagal paskirtį.
+  // Paieška pagal pavadinimą (su debounce) — dalinė, case-insensitive
+  // atitiktis catalog.name lauke. Rodomi ir gamintojas/tipas/IAN, nes tas
+  // pats pavadinimas gali kartotis tarp skirtingų gamintojų/tipų.
+  useEffect(() => {
+    if (mode !== "name") {
+      setNameResults([]);
+      setSearchingName(false);
+      return;
+    }
+    const trimmed = nameQuery.trim();
+    if (!trimmed) {
+      setNameResults([]);
+      setSearchingName(false);
+      return;
+    }
+    setSearchingName(true);
+    const handle = setTimeout(async () => {
+      const { data } = await supabase
+        .from("catalog")
+        .select("ian, name, manufacturer, item_type")
+        .ilike("name", `%${escapeLike(trimmed)}%`)
+        .not("name", "is", null)
+        .order("name", { ascending: true })
+        .limit(10);
+      setNameResults(data || []);
+      setSearchingName(false);
+    }, 300);
+    return () => clearTimeout(handle);
+  }, [nameQuery, mode]);
+
+  // Kraunamos visos status='open' paletės (įsk. tuščias — kad būtų galima jas
+  // ištrinti), sugrupuotos pagal paskirtį, kartu su pilnu kiekvienos paletės
+  // items sąrašu (peržiūrai, redagavimui ir trynimui tiesiai skenavimo puslapyje).
   async function loadOpenPallets() {
     setLoadingPallets(true);
     const { data: pallets } = await supabase
@@ -67,27 +175,41 @@ export default function ScanEntry() {
     const list = pallets || [];
     if (list.length === 0) {
       setOpenPallets([]);
+      setItemsByPallet({});
       setLoadingPallets(false);
       return;
     }
 
     const { data: items } = await supabase
       .from("items")
-      .select("pallet_id, quantity")
-      .in("pallet_id", list.map((p) => p.id));
+      .select("id, ian, name, quantity, notes, created_at, pallet_id")
+      .in("pallet_id", list.map((p) => p.id))
+      .order("created_at", { ascending: false });
 
+    const itemsMap = {};
     const qtyMap = {};
     (items || []).forEach((i) => {
-      if (i.pallet_id) qtyMap[i.pallet_id] = (qtyMap[i.pallet_id] || 0) + (i.quantity || 1);
+      if (!i.pallet_id) return;
+      (itemsMap[i.pallet_id] ||= []).push(i);
+      qtyMap[i.pallet_id] = (qtyMap[i.pallet_id] || 0) + (i.quantity || 1);
     });
 
     const withQty = list
       .map((p) => ({ ...p, qty: qtyMap[p.id] || 0 }))
-      .filter((p) => p.qty > 0)
       .sort((a, b) => prettifyDestination(a.destination).localeCompare(prettifyDestination(b.destination)));
 
     setOpenPallets(withQty);
+    setItemsByPallet(itemsMap);
     setLoadingPallets(false);
+  }
+
+  function toggleExpand(id) {
+    setExpandedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
   }
 
   async function handleClose(pallet) {
@@ -100,10 +222,52 @@ export default function ScanEntry() {
     loadOpenPallets();
   }
 
-  async function handleSubmit(e) {
-    e.preventDefault();
-    const trimmedIan = ian.trim();
-    if (!trimmedIan) return;
+  // Tuščios (0 vnt.) paletės trynimas. Paskirties numeravimo skaitliuko
+  // sutvarkymas (perskaičiuojamas iš tikrų likusių paletžų, kad savaime
+  // pasitaisytų nuo bet kokios ankstesnės neatitikties) vyksta DB pusėje
+  // per BEFORE DELETE trigerį — žr. supabase/migrate_pallet_delete_counter.sql
+  // — todėl čia pakanka paprasto DELETE, lygiai taip pat, kaip trinama
+  // prekė iš /prekes puslapio.
+  async function handleDeletePallet(pallet) {
+    const label = pallet.number ?? pallet.code;
+    if (!confirm(`Ištrinti tuščią paletę Nr. ${label}? Šio veiksmo negalima atšaukti.`)) return;
+    setDeletingPalletId(pallet.id);
+    await supabase.from("pallets").delete().eq("id", pallet.id);
+    setDeletingPalletId(null);
+    loadOpenPallets();
+  }
+
+  async function handleSaveItem(itemId, form) {
+    await supabase
+      .from("items")
+      .update({
+        ian: form.ian.trim(),
+        name: form.name.trim() || null,
+        quantity: Number(form.quantity) || 1,
+        notes: form.notes.trim() || null
+      })
+      .eq("id", itemId);
+    setEditingItem(null);
+    loadOpenPallets();
+  }
+
+  async function handleDeleteItem(item) {
+    if (!confirm(`Ar tikrai norite ištrinti „${item.name || item.ian}“?`)) return;
+    setDeletingId(item.id);
+    await supabase.from("items").delete().eq("id", item.id);
+    setDeletingId(null);
+    loadOpenPallets();
+  }
+
+  // Bendra registravimo logika — naudojama tiek skenavus/įvedus IAN rankiniu
+  // būdu, tiek pasirinkus rezultatą paieškoje pagal pavadinimą. `nameValue`,
+  // pateiktas per overrides, leidžia paieškos pasirinkimui perduoti
+  // autoritetingą katalogo pavadinimą, nepasikliaujant asinchroniniu state
+  // atnaujinimu. Grąžina true/false — ar registravimas pavyko.
+  async function registerItem(ianValue, overrides = {}) {
+    const trimmedIan = String(ianValue || "").trim();
+    if (!trimmedIan) return false;
+
     setSaving(true);
     setFeedback(null);
     setCloseMsg("");
@@ -143,8 +307,7 @@ export default function ScanEntry() {
       if (createError) {
         setSaving(false);
         setFeedback({ type: "error", message: `Klaida kuriant paletę: ${createError.message}` });
-        inputRef.current?.focus();
-        return;
+        return false;
       }
       currentPallet = newPallet;
     }
@@ -158,6 +321,8 @@ export default function ScanEntry() {
       .eq("ian", trimmedIan)
       .eq("pallet_id", currentPallet.id)
       .maybeSingle();
+
+    const nameValue = overrides.nameValue !== undefined ? overrides.nameValue : name;
 
     let feedbackMsg = "";
     let hasError = false;
@@ -177,7 +342,7 @@ export default function ScanEntry() {
     } else {
       const { error } = await supabase.from("items").insert({
         ian: trimmedIan,
-        name: name.trim() || null,
+        name: (nameValue || "").trim() || null,
         category: category.trim() || null,
         notes: notes.trim() || null,
         status: "packed",
@@ -200,15 +365,88 @@ export default function ScanEntry() {
 
     if (hasError) {
       setFeedback({ type: "error", message: feedbackMsg });
-    } else {
-      setFeedback({ type: isUnclassified ? "warn" : "ok", message: feedbackMsg });
+      return false;
+    }
+
+    setFeedback({ type: isUnclassified ? "warn" : "ok", message: feedbackMsg });
+    loadOpenPallets();
+    return true;
+  }
+
+  async function handleSubmit(e) {
+    e.preventDefault();
+    const success = await registerItem(ian);
+    if (success) {
       setIan("");
       setName("");
       setCategory("");
       setNotes("");
-      loadOpenPallets();
     }
     inputRef.current?.focus();
+  }
+
+  // Pasirinkus rezultatą paieškoje pagal pavadinimą — elgiamasi lygiai taip
+  // pat, kaip būtų nuskenuotas to įrašo IAN kodas. Po sėkmės išvalomas tik
+  // paieškos laukas/rezultatai — režimas paliekamas "name", kad darbuotojas
+  // galėtų iš karto registruoti kitą be-IAN įrankį.
+  async function handleSelectResult(result) {
+    if (saving) return;
+    const success = await registerItem(result.ian, { nameValue: result.name });
+    if (success) {
+      setNameQuery("");
+      setNameResults([]);
+    }
+    nameInputRef.current?.focus();
+  }
+
+  // Naujo, kataloge dar neregistruoto įrankio įvedimas rankiniu būdu.
+  // 1) ištraukiamas IAN + pavadinimas iš pilno teksto (ta pati regex logika
+  //    kaip CatalogImport.jsx), 2) UPSERT į catalog pagal ian (kad ateityje
+  //    šis IAN būtų atpažįstamas automatiškai), 3) registruojama TOKIU PAT
+  //    būdu, kaip įprastas IAN skenavimas — registerItem savo viduje iš
+  //    naujo užklausia catalog, todėl automatiškai pamato ką tik įrašytą
+  //    gamintoją/tipą ir teisingai apskaičiuoja paskirtį.
+  async function handleManualSubmit() {
+    if (saving) return;
+    setManualError("");
+
+    const parsed = parseManualEntry(manualText);
+    if (!parsed.ian) {
+      setManualError("Nepavyko atpažinti IAN kodo, patikrinkite formatą (turi baigtis skaičiumi skliausteliuose)");
+      return;
+    }
+    if (!manualManufacturer || !manualItemType) {
+      setManualError("Pasirinkite gamintoją ir tipą");
+      return;
+    }
+
+    setSaving(true);
+    setFeedback(null);
+
+    const { error: catalogError } = await supabase
+      .from("catalog")
+      .upsert(
+        {
+          ian: parsed.ian,
+          name: parsed.name,
+          manufacturer: manualManufacturer,
+          item_type: manualItemType,
+          raw_text: manualText.trim()
+        },
+        { onConflict: "ian" }
+      );
+
+    if (catalogError) {
+      setSaving(false);
+      setManualError(`Klaida įrašant į katalogą: ${catalogError.message}`);
+      return;
+    }
+
+    const success = await registerItem(parsed.ian, { nameValue: parsed.name });
+    if (success) {
+      setManualText("");
+    }
+    manualInputRef.current?.focus();
   }
 
   return (
@@ -221,51 +459,7 @@ export default function ScanEntry() {
         </p>
       </div>
 
-      {/* Dabartinės atviros paletės */}
-      <div className="space-y-2">
-        <h2 className="text-sm font-semibold text-ink-800">Dabartinės atviros paletės</h2>
-        {loadingPallets ? (
-          <div className="panel flex items-center justify-center p-4">
-            <Loader2 className="animate-spin text-ink-600/40" size={18} />
-          </div>
-        ) : openPallets.length === 0 ? (
-          <div className="panel p-4 text-sm text-ink-600/50">
-            Paletė bus sukurta automatiškai su pirmu skenavimu.
-          </div>
-        ) : (
-          <div className="grid gap-2 sm:grid-cols-2">
-            {openPallets.map((p) => (
-              <div key={p.id} className="panel flex items-center justify-between gap-3 p-3.5">
-                <div className="min-w-0">
-                  <p className="truncate text-sm font-bold text-ink-900">
-                    {prettifyDestination(p.destination)}
-                  </p>
-                  <p className="text-xs text-ink-600/60">
-                    {p.number ? `${p.number} paletė` : p.code} &middot; {p.qty} vnt.
-                  </p>
-                </div>
-                <button
-                  onClick={() => handleClose(p)}
-                  disabled={closingId === p.id}
-                  className="btn-secondary shrink-0"
-                >
-                  {closingId === p.id
-                    ? <Loader2 size={14} className="animate-spin" />
-                    : <PackageCheck size={14} />}
-                  Išvežta
-                </button>
-              </div>
-            ))}
-          </div>
-        )}
-        {closeMsg && (
-          <p className="flex items-center gap-1.5 text-xs font-medium text-signal-teal">
-            <CheckCircle2 size={13} /> {closeMsg}
-          </p>
-        )}
-      </div>
-
-      {/* Skenerio forma */}
+      {/* Skenerio / paieškos forma */}
       <form
         onSubmit={handleSubmit}
         className="rounded-2xl bg-ink-950 p-5 shadow-panel lg:p-6"
@@ -275,61 +469,215 @@ export default function ScanEntry() {
           Skenerio įvestis
         </div>
 
-        <div className="relative">
-          <input
-            ref={inputRef}
-            value={ian}
-            onChange={(e) => setIan(e.target.value)}
-            placeholder="IAN-000000"
-            autoComplete="off"
-            className="w-full rounded-xl border border-white/10 bg-ink-900 px-4 py-4 font-mono text-lg tracking-wider text-white
-              placeholder:text-white/20 outline-none focus:border-signal-orange focus:ring-2 focus:ring-signal-orange/30"
-          />
-          <span className="pointer-events-none absolute right-4 top-1/2 -translate-y-1/2 font-mono text-xs text-white/20">
-            ENTER
-          </span>
+        {/* Režimo perjungiklis */}
+        <div className="mb-3 inline-flex rounded-lg border border-white/10 bg-white/5 p-1 text-xs font-semibold">
+          <button
+            type="button"
+            onClick={() => setMode("ian")}
+            className={
+              mode === "ian"
+                ? "rounded-md bg-white px-3 py-1.5 text-ink-950"
+                : "rounded-md px-3 py-1.5 text-white/60 hover:text-white"
+            }
+          >
+            IAN kodas
+          </button>
+          <button
+            type="button"
+            onClick={() => setMode("name")}
+            className={
+              mode === "name"
+                ? "rounded-md bg-white px-3 py-1.5 text-ink-950"
+                : "rounded-md px-3 py-1.5 text-white/60 hover:text-white"
+            }
+          >
+            Ieškoti pagal pavadinimą
+          </button>
+          <button
+            type="button"
+            onClick={() => setMode("manual")}
+            className={
+              mode === "manual"
+                ? "rounded-md bg-white px-3 py-1.5 text-ink-950"
+                : "rounded-md px-3 py-1.5 text-white/60 hover:text-white"
+            }
+          >
+            Naujas įrankis
+          </button>
         </div>
 
-        {previewUnclassified && ian.trim() && (
-          <p className="mt-2 flex items-center gap-1.5 text-xs text-signal-amber">
-            <AlertTriangle size={13} />
-            Paskirtis nenustatyta — prekė bus priskirta „Nepriskirta“ paletei
-          </p>
-        )}
+        {mode === "ian" ? (
+          <>
+            <div className="relative">
+              <input
+                ref={inputRef}
+                value={ian}
+                onChange={(e) => setIan(e.target.value)}
+                placeholder="IAN-000000"
+                autoComplete="off"
+                className="w-full rounded-xl border border-white/10 bg-ink-900 px-4 py-4 font-mono text-lg tracking-wider text-white
+                  placeholder:text-white/20 outline-none focus:border-signal-orange focus:ring-2 focus:ring-signal-orange/30"
+              />
+              <span className="pointer-events-none absolute right-4 top-1/2 -translate-y-1/2 font-mono text-xs text-white/20">
+                ENTER
+              </span>
+            </div>
 
-        <div className="mt-4 grid gap-3 sm:grid-cols-3">
-          <div>
+            {previewUnclassified && ian.trim() && (
+              <p className="mt-2 flex items-center gap-1.5 text-xs text-signal-amber">
+                <AlertTriangle size={13} />
+                Paskirtis nenustatyta — prekė bus priskirta „Nepriskirta" paletei
+              </p>
+            )}
+          </>
+        ) : mode === "name" ? (
+          <div className="relative">
             <input
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              placeholder="Pavadinimas (nebūtina)"
-              className="input-field bg-white/[0.06] border-white/10 text-white placeholder:text-white/30 focus:bg-white"
+              ref={nameInputRef}
+              value={nameQuery}
+              onChange={(e) => setNameQuery(e.target.value)}
+              placeholder="Įrankio pavadinimas…"
+              autoComplete="off"
+              className="w-full rounded-xl border border-white/10 bg-ink-900 px-4 py-4 text-base text-white
+                placeholder:text-white/20 outline-none focus:border-signal-orange focus:ring-2 focus:ring-signal-orange/30"
             />
-            {catalogNotFound && (
-              <p className="mt-1.5 text-xs text-signal-amber">
-                Nerasta kataloge — įveskite pavadinimą rankiniu būdu
+            {searchingName && (
+              <Loader2
+                size={16}
+                className="pointer-events-none absolute right-4 top-1/2 -translate-y-1/2 animate-spin text-white/30"
+              />
+            )}
+
+            {nameQuery.trim() && !searchingName && (
+              nameResults.length > 0 ? (
+                <div className="mt-2 max-h-72 divide-y divide-white/5 overflow-y-auto rounded-xl border border-white/10 bg-ink-900">
+                  {nameResults.map((r) => (
+                    <button
+                      key={r.ian}
+                      type="button"
+                      disabled={saving}
+                      onClick={() => handleSelectResult(r)}
+                      className="block w-full px-4 py-3 text-left text-sm text-white hover:bg-white/5 disabled:opacity-50"
+                    >
+                      <span className="font-medium">{r.name}</span>
+                      <span className="text-white/50">
+                        {" "}— {r.manufacturer || "?"} — {r.item_type || "?"} — IAN {r.ian}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              ) : (
+                <p className="mt-2 flex items-center gap-1.5 text-xs text-signal-amber">
+                  <AlertTriangle size={13} />
+                  Nerasta — patikrinkite rašybą arba naudokite IAN kodą, jei žinote.
+                </p>
+              )
+            )}
+          </div>
+        ) : (
+          <div className="space-y-3">
+            <div>
+              <textarea
+                ref={manualInputRef}
+                value={manualText}
+                onChange={(e) => { setManualText(e.target.value); setManualError(""); }}
+                placeholder='Pvz. "BRM Parkside PBRM 39 D3-Service (478255)"'
+                rows={2}
+                autoComplete="off"
+                className="w-full resize-none rounded-xl border border-white/10 bg-ink-900 px-4 py-3 text-sm text-white
+                  placeholder:text-white/20 outline-none focus:border-signal-orange focus:ring-2 focus:ring-signal-orange/30"
+              />
+              <p className="mt-1.5 text-[11px] text-white/30">
+                Formatas: „Pavadinimas (IAN kodas)" — IAN turi būti skaičius skliausteliuose gale.
+              </p>
+            </div>
+
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div>
+                <label className="mb-1 block text-xs font-semibold text-white/50">Gamintojas</label>
+                <select
+                  value={manualManufacturer}
+                  onChange={(e) => { setManualManufacturer(e.target.value); setManualItemType(""); }}
+                  className="input-field bg-white/[0.06] border-white/10 text-white"
+                >
+                  <option value="" className="bg-ink-900 text-white">— Pasirinkite —</option>
+                  {Object.keys(MANUFACTURER_TYPES).map((m) => (
+                    <option key={m} value={m} className="bg-ink-900 text-white">{m}</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="mb-1 block text-xs font-semibold text-white/50">Tipas</label>
+                <select
+                  value={manualItemType}
+                  onChange={(e) => setManualItemType(e.target.value)}
+                  disabled={!manualManufacturer}
+                  className="input-field bg-white/[0.06] border-white/10 text-white disabled:opacity-40"
+                >
+                  <option value="" className="bg-ink-900 text-white">— Pasirinkite —</option>
+                  {(MANUFACTURER_TYPES[manualManufacturer] || []).map((t) => (
+                    <option key={t} value={t} className="bg-ink-900 text-white">{t}</option>
+                  ))}
+                </select>
+              </div>
+            </div>
+
+            {manualError && (
+              <p className="flex items-center gap-1.5 text-xs text-signal-red">
+                <AlertCircle size={13} /> {manualError}
               </p>
             )}
           </div>
+        )}
+
+        <div className={`mt-4 grid gap-3 ${mode === "ian" ? "sm:grid-cols-3" : "sm:grid-cols-2"}`}>
+          {mode === "ian" && (
+            <div>
+              <input
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                placeholder="Pavadinimas (nebūtina)"
+                className="input-field bg-white/[0.06] border-white/10 text-white placeholder:text-white/30"
+              />
+              {catalogNotFound && (
+                <p className="mt-1.5 text-xs text-signal-amber">
+                  Nerasta kataloge — įveskite pavadinimą rankiniu būdu
+                </p>
+              )}
+            </div>
+          )}
           <input
             value={category}
             onChange={(e) => setCategory(e.target.value)}
             placeholder="Kategorija (nebūtina)"
-            className="input-field bg-white/[0.06] border-white/10 text-white placeholder:text-white/30 focus:bg-white"
+            className="input-field bg-white/[0.06] border-white/10 text-white placeholder:text-white/30"
           />
           <input
             value={notes}
             onChange={(e) => setNotes(e.target.value)}
             placeholder="Pastaba (nebūtina)"
-            className="input-field bg-white/[0.06] border-white/10 text-white placeholder:text-white/30 focus:bg-white"
+            className="input-field bg-white/[0.06] border-white/10 text-white placeholder:text-white/30"
           />
         </div>
 
         <div className="mt-4 flex items-center gap-3">
-          <button type="submit" disabled={saving || !ian.trim()} className="btn-primary">
-            {saving ? <Loader2 size={16} className="animate-spin" /> : <ScanLine size={16} />}
-            Registruoti
-          </button>
+          {mode === "ian" && (
+            <button type="submit" disabled={saving || !ian.trim()} className="btn-primary">
+              {saving ? <Loader2 size={16} className="animate-spin" /> : <ScanLine size={16} />}
+              Registruoti
+            </button>
+          )}
+          {mode === "manual" && (
+            <button
+              type="button"
+              onClick={handleManualSubmit}
+              disabled={saving || !manualText.trim() || !manualManufacturer || !manualItemType}
+              className="btn-primary"
+            >
+              {saving ? <Loader2 size={16} className="animate-spin" /> : <Plus size={16} />}
+              Pridėti
+            </button>
+          )}
           {feedback && (
             <span
               className={`flex items-center gap-1.5 text-sm font-medium ${
@@ -348,6 +696,214 @@ export default function ScanEntry() {
               {feedback.message}
             </span>
           )}
+        </div>
+      </form>
+
+      {/* Dabartinės atviros paletės */}
+      <div className="space-y-2">
+        <h2 className="text-sm font-semibold text-ink-800">Dabartinės atviros paletės</h2>
+        {loadingPallets ? (
+          <div className="panel flex items-center justify-center p-4">
+            <Loader2 className="animate-spin text-ink-600/40" size={18} />
+          </div>
+        ) : openPallets.length === 0 ? (
+          <div className="panel p-4 text-sm text-ink-600/50">
+            Paletė bus sukurta automatiškai su pirmu skenavimu.
+          </div>
+        ) : (
+          <div className="flex flex-col gap-2">
+            {openPallets.map((p) => {
+              const expanded = expandedIds.has(p.id);
+              const palletItems = itemsByPallet[p.id] || [];
+              return (
+                <div key={p.id} className="panel space-y-3 p-3.5">
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="min-w-0">
+                      <p className="truncate text-sm font-bold text-ink-900">
+                        {prettifyDestination(p.destination)}
+                      </p>
+                      <p className="text-xs text-ink-600/60">
+                        {p.number ? `${p.number} paletė` : p.code} &middot; {p.qty} vnt.
+                      </p>
+                    </div>
+                    <div className="flex shrink-0 flex-col items-stretch gap-1.5 sm:flex-row sm:items-center">
+                      <button
+                        onClick={() => handleClose(p)}
+                        disabled={closingId === p.id}
+                        className="btn-secondary"
+                      >
+                        {closingId === p.id
+                          ? <Loader2 size={14} className="animate-spin" />
+                          : <PackageCheck size={14} />}
+                        Išvežta
+                      </button>
+                      {p.qty === 0 && (
+                        <button
+                          onClick={() => handleDeletePallet(p)}
+                          disabled={deletingPalletId === p.id}
+                          className="btn-secondary text-signal-red hover:bg-signal-red/10"
+                        >
+                          {deletingPalletId === p.id
+                            ? <Loader2 size={14} className="animate-spin" />
+                            : <Trash2 size={14} />}
+                          Ištrinti paletę
+                        </button>
+                      )}
+                    </div>
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={() => toggleExpand(p.id)}
+                    className="flex items-center gap-1.5 text-xs font-medium text-ink-600/70 hover:text-ink-900"
+                  >
+                    {expanded ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+                    Peržiūrėti turinį
+                  </button>
+
+                  {expanded && (
+                    <div className="overflow-hidden rounded-xl border border-ink-700/10">
+                      {palletItems.length === 0 ? (
+                        <p className="p-3 text-center text-xs text-ink-600/50">Prekių dar nepridėta.</p>
+                      ) : (
+                        <div className="divide-y divide-ink-900/5">
+                          {palletItems.map((item) => (
+                            <div key={item.id} className="flex items-center justify-between gap-2 p-2.5">
+                              <div className="min-w-0">
+                                <p className="truncate font-mono text-xs font-medium text-ink-900">{item.ian}</p>
+                                {item.name && (
+                                  <p className="truncate text-xs text-ink-600/60">{item.name}</p>
+                                )}
+                                <p className="text-[10px] text-ink-600/40">{formatDateTime(item.created_at)}</p>
+                              </div>
+                              <div className="flex shrink-0 items-center gap-1.5">
+                                <span className="text-xs font-medium text-ink-600/50">{item.quantity || 1} vnt.</span>
+                                <button
+                                  onClick={() => setEditingItem(item)}
+                                  className="rounded-lg p-1.5 text-ink-600/60 hover:bg-ink-900/5 hover:text-ink-900"
+                                  aria-label="Redaguoti"
+                                >
+                                  <Pencil size={14} />
+                                </button>
+                                <button
+                                  onClick={() => handleDeleteItem(item)}
+                                  disabled={deletingId === item.id}
+                                  className="rounded-lg p-1.5 text-ink-600/60 hover:bg-signal-red/10 hover:text-signal-red"
+                                  aria-label="Trinti"
+                                >
+                                  {deletingId === item.id
+                                    ? <Loader2 size={14} className="animate-spin" />
+                                    : <Trash2 size={14} />}
+                                </button>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+        {closeMsg && (
+          <p className="flex items-center gap-1.5 text-xs font-medium text-signal-teal">
+            <CheckCircle2 size={13} /> {closeMsg}
+          </p>
+        )}
+      </div>
+
+      {editingItem && (
+        <EditItemModal
+          item={editingItem}
+          onClose={() => setEditingItem(null)}
+          onSave={handleSaveItem}
+        />
+      )}
+    </div>
+  );
+}
+
+// Supaprastinta redagavimo modalo versija paletės turiniui skenavimo puslapyje —
+// tik ian/name/quantity/notes, nes status ir pallet_id čia nekintami (įrašas
+// jau žinomai priklauso šiai paletei ir yra 'packed' būsenos).
+function EditItemModal({ item, onClose, onSave }) {
+  const [form, setForm] = useState({
+    ian: item.ian || "",
+    name: item.name || "",
+    quantity: item.quantity ?? 1,
+    notes: item.notes || ""
+  });
+  const [saving, setSaving] = useState(false);
+
+  async function submit(e) {
+    e.preventDefault();
+    setSaving(true);
+    await onSave(item.id, form);
+    setSaving(false);
+  }
+
+  return (
+    <div className="fixed inset-0 z-30 flex items-end justify-center bg-ink-950/50 p-0 sm:items-center sm:p-4">
+      <form
+        onSubmit={submit}
+        className="w-full max-w-md rounded-t-2xl bg-white p-5 shadow-panel sm:rounded-2xl"
+      >
+        <div className="mb-4 flex items-center justify-between">
+          <h2 className="text-base font-bold text-ink-900">Redaguoti įrašą</h2>
+          <button type="button" onClick={onClose} className="rounded-lg p-1.5 hover:bg-ink-900/5">
+            <X size={18} />
+          </button>
+        </div>
+
+        <div className="space-y-3">
+          <div>
+            <label className="mb-1 block text-xs font-semibold text-ink-600/70">IAN kodas</label>
+            <input
+              value={form.ian}
+              onChange={(e) => setForm({ ...form, ian: e.target.value })}
+              className="input-field font-mono"
+              required
+            />
+          </div>
+          <div>
+            <label className="mb-1 block text-xs font-semibold text-ink-600/70">Pavadinimas</label>
+            <input
+              value={form.name}
+              onChange={(e) => setForm({ ...form, name: e.target.value })}
+              className="input-field"
+            />
+          </div>
+          <div>
+            <label className="mb-1 block text-xs font-semibold text-ink-600/70">Kiekis</label>
+            <input
+              type="number"
+              min={1}
+              value={form.quantity}
+              onChange={(e) => setForm({ ...form, quantity: e.target.value })}
+              className="input-field"
+            />
+          </div>
+          <div>
+            <label className="mb-1 block text-xs font-semibold text-ink-600/70">Pastaba</label>
+            <textarea
+              value={form.notes}
+              onChange={(e) => setForm({ ...form, notes: e.target.value })}
+              rows={2}
+              className="input-field resize-none"
+            />
+          </div>
+        </div>
+
+        <div className="mt-5 flex justify-end gap-2">
+          <button type="button" onClick={onClose} className="btn-secondary">
+            Atšaukti
+          </button>
+          <button type="submit" disabled={saving} className="btn-primary">
+            {saving && <Loader2 size={15} className="animate-spin" />}
+            Išsaugoti
+          </button>
         </div>
       </form>
     </div>
