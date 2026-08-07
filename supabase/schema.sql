@@ -536,15 +536,30 @@ drop function if exists public.reset_pallet_numbering_on_shipment_sent();
 
 create or replace function public.reset_pallet_numbering_on_ready()
 returns trigger as $$
+declare
+  v_existing_ready_count integer;
 begin
   if new.status = 'ready' and old.status is distinct from 'ready' then
-    update public.pallet_number_counters
-       set current_number = 0
-     where destination = new.destination;
+    -- Atstatoma TIK jei tai pirma "ready" paletė tai paskirčiai (anksčiau
+    -- nebuvo nė vienos) — kad prisijungimas prie jau esančio "ready"
+    -- komplekto (žr. 21 sekciją) neatstatytų skaitliuko jau NAUJAM,
+    -- tuo metu galbūt besikaupiančiam ciklui.
+    select count(*) into v_existing_ready_count
+      from public.pallets
+     where destination = new.destination
+       and status = 'ready'
+       and shipment_id is null
+       and id <> new.id;
 
-    insert into public.pallet_number_counters (destination, current_number)
-    values (new.destination, 0)
-    on conflict (destination) do nothing;
+    if v_existing_ready_count = 0 then
+      update public.pallet_number_counters
+         set current_number = 0
+       where destination = new.destination;
+
+      insert into public.pallet_number_counters (destination, current_number)
+      values (new.destination, 0)
+      on conflict (destination) do nothing;
+    end if;
   end if;
   return new;
 end;
@@ -554,3 +569,95 @@ drop trigger if exists pallets_reset_numbering_on_ready on public.pallets;
 create trigger pallets_reset_numbering_on_ready
   after update on public.pallets
   for each row execute function public.reset_pallet_numbering_on_ready();
+
+-- ------------------------------------------------------------
+-- 21. "Ready" EILĖS POZICIJA — atskiras skaitliukas nuo darbinio (20
+-- sekcijos). Kai paletė tampa "ready", ji PERNUMERUOJAMA pagal esamų
+-- neišsiųstų "ready" paletžų tai paskirčiai skaičių + 1 — taip paletė,
+-- prisijungianti prie jau esančio, dar neišsiųsto "ready" komplekto (pvz.
+-- kurjeris gali paimti daugiau), gauna teisingą tęstinį numerį (pvz. "7",
+-- ne "1"), o ne susikerta su jau esančiais numeriais tame pačiame komplekte.
+-- Ši pozicija atsistato į 0 TIK kai siunta REALIAI pažymima "sent"
+-- (kurjeris pasiėmė) — ne anksčiau, nes kol siunta nepasiimta, prie jos
+-- gali prisijungti daugiau paletžų.
+-- (Naujai DB — čia; esamai DB naudoti migrate_ready_position_renumbering.sql)
+-- ------------------------------------------------------------
+create table if not exists public.pallet_ready_counters (
+  destination      text primary key,
+  current_position integer not null default 0
+);
+
+comment on table public.pallet_ready_counters is
+  'Kiekvienos destination dabartinė "paruošta išvežimui" eilės pozicija. Atskira nuo pallet_number_counters (darbinio, dar nepasiruošusioms paletėms numeruoti).';
+
+alter table public.pallet_ready_counters enable row level security;
+
+create or replace function public.assign_pallet_ready_position()
+returns trigger as $$
+declare
+  v_position integer;
+begin
+  if new.status = 'ready' and old.status is distinct from 'ready' then
+    insert into public.pallet_ready_counters (destination, current_position)
+    values (new.destination, 1)
+    on conflict (destination) do update
+      set current_position = public.pallet_ready_counters.current_position + 1
+    returning current_position into v_position;
+
+    new.number := v_position;
+    new.code := 'PAL-' || v_position;
+  end if;
+  return new;
+end;
+$$ language plpgsql security definer set search_path = public;
+
+drop trigger if exists pallets_assign_ready_position on public.pallets;
+create trigger pallets_assign_ready_position
+  before update on public.pallets
+  for each row execute function public.assign_pallet_ready_position();
+
+create or replace function public.reset_pallet_ready_position_on_sent()
+returns trigger as $$
+begin
+  if (tg_op = 'INSERT' and new.status = 'sent')
+     or (tg_op = 'UPDATE' and new.status = 'sent' and old.status is distinct from 'sent') then
+    update public.pallet_ready_counters
+       set current_position = 0
+     where destination = new.destination;
+
+    insert into public.pallet_ready_counters (destination, current_position)
+    values (new.destination, 0)
+    on conflict (destination) do nothing;
+  end if;
+  return new;
+end;
+$$ language plpgsql security definer set search_path = public;
+
+drop trigger if exists shipments_reset_ready_position on public.shipments;
+create trigger shipments_reset_ready_position
+  after insert or update on public.shipments
+  for each row execute function public.reset_pallet_ready_position_on_sent();
+
+-- Perrašo ankstesnę reset_test_data() versiją — papildomai išvalo ir naują
+-- pallet_ready_counters lentelę, kad po testinių duomenų išvalymo neliktų
+-- senų "ready" pozicijų.
+create or replace function public.reset_test_data()
+returns json
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  truncate table
+    public.item_history,
+    public.items,
+    public.pallets,
+    public.shipments
+  cascade;
+
+  truncate table public.pallet_number_counters;
+  truncate table public.pallet_ready_counters;
+
+  return json_build_object('ok', true);
+end;
+$$;
