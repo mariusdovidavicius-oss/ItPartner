@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import * as XLSX from "xlsx";
 import { Upload, FileSpreadsheet, CheckCircle2, AlertCircle, Loader2 } from "lucide-react";
 import { supabase } from "../lib/supabaseClient";
+import { normalizeHeader } from "../lib/excelHeaders";
 
 const BATCH_SIZE = 500;
 
@@ -23,16 +24,6 @@ function columnLabel(index) {
     n = Math.floor(n / 26) - 1;
   } while (n >= 0);
   return label;
-}
-
-// Trim + mažosios raidės + diakritikų pašalinimas — antraštės atpažinimui
-// nepriklausomai nuo koduotės/rašybos variacijų (pvz. jei eksportas sugadina raides).
-function normalizeHeader(str) {
-  return String(str ?? "")
-    .normalize("NFD")
-    .replace(/\p{Diacritic}/gu, "")
-    .trim()
-    .toLowerCase();
 }
 
 export default function CatalogImport() {

@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { NavLink, Outlet } from "react-router-dom";
-import { ScanLine, PackageSearch, Boxes, ChevronDown } from "lucide-react";
+import { ScanLine, PackageSearch, Boxes, ChevronDown, Wrench } from "lucide-react";
 
 // Meniu punktai sugrupuoti pagal modulį — kai atsiras naujų programos dalių
 // (ne tik sandėlis), joms tiesiog reikės naujos grupės su sava antrašte.
@@ -10,6 +10,12 @@ const NAV_GROUPS = [
     items: [
       { to: "/",        label: "Prietaisų registravimas", icon: ScanLine, end: true },
       { to: "/paletes", label: "Paletės",     icon: Boxes }
+    ]
+  },
+  {
+    label: "Priedų sandėlis",
+    items: [
+      { to: "/priedai", label: "Priedai", icon: Wrench }
     ]
   }
 ];

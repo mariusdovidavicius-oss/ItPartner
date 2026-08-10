@@ -5,6 +5,8 @@ import Pallets from "./pages/Pallets";
 import PalletDetail from "./pages/PalletDetail";
 import ShipmentsList from "./pages/ShipmentsList";
 import ShipmentDetail from "./pages/ShipmentDetail";
+import Parts from "./pages/Parts";
+import PartsImport from "./pages/PartsImport";
 import CatalogImport from "./pages/CatalogImport";
 import AdminReset from "./pages/AdminReset";
 
@@ -17,7 +19,9 @@ export default function App() {
         <Route path="/paletes/:id" element={<PalletDetail />} />
         <Route path="/siuntos" element={<ShipmentsList />} />
         <Route path="/siuntos/:id" element={<ShipmentDetail />} />
+        <Route path="/priedai" element={<Parts />} />
         {/* Administraciniai puslapiai — tik tiesioginiu adresu, be nuorodos navigacijoje */}
+        <Route path="/priedai/importas" element={<PartsImport />} />
         <Route path="/katalogas" element={<CatalogImport />} />
         <Route path="/admin-reset" element={<AdminReset />} />
       </Route>
