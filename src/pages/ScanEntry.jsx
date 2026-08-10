@@ -5,6 +5,7 @@ import {
 } from "lucide-react";
 import { supabase } from "../lib/supabaseClient";
 import { computeDestination, prettifyDestination, UNCLASSIFIED } from "../lib/destination";
+import { printPalletLabel } from "../lib/printLabel";
 
 // Leistini gamintojo -> tipo deriniai rankiniam naujo įrankio įvedimui.
 // Reikšmės TIKSLIAI atitinka jau naudojamas catalog.manufacturer/item_type
@@ -82,8 +83,8 @@ export default function ScanEntry() {
     inputRef.current?.focus();
     loadOpenPallets();
 
-    // Realtime: kito įrenginio/lango atliktas prekės ar paletės pakeitimas
-    // taip pat turi atsispindėti čia (pvz. redagavimas iš /prekes puslapio).
+    // Realtime: kito įrenginio/lango atliktas prietaiso ar paletės pakeitimas
+    // taip pat turi atsispindėti čia (pvz. redagavimas iš paletės detalės puslapio).
     const channel = supabase
       .channel("scan-entry-open-pallets")
       .on("postgres_changes", { event: "*", schema: "public", table: "items" }, loadOpenPallets)
@@ -241,7 +242,7 @@ export default function ScanEntry() {
     await supabase.from("pallets").update({ status: "closed" }).eq("id", pallet.id);
     const { data: updated } = await supabase
       .from("pallets")
-      .select("number, destination")
+      .select("number, destination, packed_at")
       .eq("id", pallet.id)
       .single();
     const label = updated?.number
@@ -249,6 +250,7 @@ export default function ScanEntry() {
       : prettifyDestination(pallet.destination);
     setCloseMsg(`${label} išvežta į sandėlį`);
     setClosingId(null);
+    if (updated) printPalletLabel(updated);
     loadOpenPallets();
   }
 
@@ -256,8 +258,7 @@ export default function ScanEntry() {
   // "gyvai" (spragos paieška, žr. supabase/migrate_gap_fill_pallet_numbering.sql),
   // todėl jokios papildomos skaitliuko korekcijos nebereikia — po ištrynimo
   // atsilaisvinęs numeris tiesiog taps matoma spraga sekantį kartą. Čia
-  // pakanka paprasto DELETE, lygiai taip pat, kaip trinama prekė iš
-  // /prekes puslapio.
+  // pakanka paprasto DELETE, lygiai taip pat, kaip trinamas pavienis prietaisas.
   async function handleDeletePallet(pallet) {
     const label = pallet.number ?? pallet.code;
     if (!confirm(`Ištrinti tuščią paletę Nr. ${label}? Šio veiksmo negalima atšaukti.`)) return;
@@ -303,13 +304,25 @@ export default function ScanEntry() {
     setCloseMsg("");
 
     // Šviežia (ne debounce cache) katalogo užklausa — paskirtis nulemia KURIAI
-    // paletei priklausys prekė, todėl čia svarbiau tikslumas nei greitis:
+    // paletei priklausys prietaisas, todėl čia svarbiau tikslumas nei greitis:
     // skeneriai dažnai įveda + Enter greičiau nei 400ms debounce.
     const { data: catalogRow } = await supabase
       .from("catalog")
       .select("name, manufacturer, item_type")
       .eq("ian", trimmedIan)
       .maybeSingle();
+
+    // Apsauga nuo neegzistuojančio prietaiso patekimo į paletę: jei IAN
+    // kataloge nerastas, registravimas atmetamas — naują prietaisą reikia
+    // pridėti per skirtuką "Naujas įrankis" (jis pirma pats įrašo į katalogą).
+    if (!catalogRow) {
+      setSaving(false);
+      setFeedback({
+        type: "error",
+        message: `IAN ${trimmedIan} nerastas kataloge — naudokite skirtuką „Naujas įrankis“, kad pridėtumėte naują prietaisą.`
+      });
+      return false;
+    }
 
     const destination = computeDestination(catalogRow?.manufacturer, catalogRow?.item_type);
     const isUnclassified = destination === UNCLASSIFIED;
@@ -442,11 +455,11 @@ export default function ScanEntry() {
 
     const parsed = parseManualEntry(manualText);
     if (!parsed.ian) {
-      setManualError("Nepavyko atpažinti IAN kodo, patikrinkite formatą (turi baigtis skaičiumi skliausteliuose)");
+      setManualError("Nepavyko atpažinti IAN kodo, patikrinkite formatą (turi baigtis skaičiumi skliausteliuose).");
       return;
     }
     if (!manualManufacturer || !manualItemType) {
-      setManualError("Pasirinkite gamintoją ir tipą");
+      setManualError("Pasirinkite gamintoją ir tipą.");
       return;
     }
 
@@ -482,7 +495,7 @@ export default function ScanEntry() {
   return (
     <div className="space-y-5">
       <div>
-        <h1 className="text-xl font-bold text-ink-900 lg:text-2xl">Prekių registravimas</h1>
+        <h1 className="text-xl font-bold text-ink-900 lg:text-2xl">Prietaisų registravimas</h1>
         <p className="mt-1 text-sm text-ink-600/70">
           Nuskenuokite IAN kodą — paskirtis (paletė) nustatoma automatiškai pagal katalogo
           gamintoją ir tipą.
@@ -542,8 +555,9 @@ export default function ScanEntry() {
               <input
                 ref={inputRef}
                 value={ian}
-                onChange={(e) => setIan(e.target.value)}
-                placeholder="IAN-000000"
+                onChange={(e) => setIan(e.target.value.replace(/\D/g, ""))}
+                placeholder="000000"
+                inputMode="numeric"
                 autoComplete="off"
                 className="w-full rounded-xl border border-white/10 bg-ink-900 px-4 py-4 font-mono text-lg tracking-wider text-white
                   placeholder:text-white/20 outline-none focus:border-signal-orange focus:ring-2 focus:ring-signal-orange/30"
@@ -556,7 +570,7 @@ export default function ScanEntry() {
             {previewUnclassified && ian.trim() && (
               <p className="mt-2 flex items-center gap-1.5 text-xs text-signal-amber">
                 <AlertTriangle size={13} />
-                Paskirtis nenustatyta — prekė bus priskirta „Nepriskirta" paletei
+                Paskirtis nenustatyta — prietaisas bus priskirtas „Nepriskirta“ paletei
               </p>
             )}
           </>
@@ -618,7 +632,7 @@ export default function ScanEntry() {
                   placeholder:text-white/20 outline-none focus:border-signal-orange focus:ring-2 focus:ring-signal-orange/30"
               />
               <p className="mt-1.5 text-[11px] text-white/30">
-                Formatas: „Pavadinimas (IAN kodas)" — IAN turi būti skaičius skliausteliuose gale.
+                Formatas: „Pavadinimas (IAN kodas)“ — IAN turi būti skaičius skliausteliuose gale.
               </p>
             </div>
 
@@ -670,8 +684,8 @@ export default function ScanEntry() {
                 className="input-field bg-white/[0.06] border-white/10 text-white placeholder:text-white/30"
               />
               {catalogNotFound && (
-                <p className="mt-1.5 text-xs text-signal-amber">
-                  Nerasta kataloge — įveskite pavadinimą rankiniu būdu
+                <p className="mt-1.5 text-xs text-signal-red">
+                  Nerasta kataloge — registruoti negalima. Naudokite skirtuką „Naujas įrankis“.
                 </p>
               )}
             </div>
@@ -692,7 +706,7 @@ export default function ScanEntry() {
 
         <div className="mt-4 flex items-center gap-3">
           {mode === "ian" && (
-            <button type="submit" disabled={saving || !ian.trim()} className="btn-primary">
+            <button type="submit" disabled={saving || !ian.trim() || catalogNotFound} className="btn-primary">
               {saving ? <Loader2 size={16} className="animate-spin" /> : <ScanLine size={16} />}
               Registruoti
             </button>
@@ -819,7 +833,7 @@ export default function ScanEntry() {
                   {expanded && (
                     <div className="overflow-hidden rounded-xl border border-ink-700/10">
                       {palletItems.length === 0 ? (
-                        <p className="p-3 text-center text-xs text-ink-600/50">Prekių dar nepridėta.</p>
+                        <p className="p-3 text-center text-xs text-ink-600/50">Prietaisų dar nepridėta.</p>
                       ) : (
                         <div className="divide-y divide-ink-900/5">
                           {palletItems.map((item) => (
@@ -917,7 +931,8 @@ function EditItemModal({ item, onClose, onSave }) {
             <label className="mb-1 block text-xs font-semibold text-ink-600/70">IAN kodas</label>
             <input
               value={form.ian}
-              onChange={(e) => setForm({ ...form, ian: e.target.value })}
+              onChange={(e) => setForm({ ...form, ian: e.target.value.replace(/\D/g, "") })}
+              inputMode="numeric"
               className="input-field font-mono"
               required
             />

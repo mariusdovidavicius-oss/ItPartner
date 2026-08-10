@@ -96,9 +96,9 @@ export default function PalletDetail() {
     load();
   }
 
-  // Prekės pridėjimas TIESIAI į šią paletę (nepriklausomai nuo jos būsenos —
+  // Prietaiso pridėjimas TIESIAI į šią paletę (nepriklausomai nuo jos būsenos —
   // 'closed'/'ready' paletės anksčiau neturėjo jokio būdo įtraukti naują
-  // prekę, tik ScanEntry, kuri visada renkasi/kuria atvirą paletę). Jei toks
+  // prietaisą, tik ScanEntry, kuri visada renkasi/kuria atvirą paletę). Jei toks
   // IAN šioje paletėje jau yra — kiekis padidinamas, ne kuriamas dublikatas.
   async function handleAddItem(e) {
     e.preventDefault();
@@ -131,6 +131,12 @@ export default function PalletDetail() {
         .select("name")
         .eq("ian", trimmedIan)
         .maybeSingle();
+
+      if (!catalogRow) {
+        setAddError(`IAN ${trimmedIan} nerastas kataloge — prietaisą pirma reikia įregistruoti skenavimo puslapyje.`);
+        setAddingItem(false);
+        return;
+      }
 
       const { error } = await supabase.from("items").insert({
         ian: trimmedIan,
@@ -240,13 +246,14 @@ export default function PalletDetail() {
       </div>
 
       <form onSubmit={handleAddItem} className="panel space-y-2 p-4 lg:p-5">
-        <label className="block text-xs font-semibold text-ink-600/70">Pridėti prekę į šią paletę</label>
+        <label className="block text-xs font-semibold text-ink-600/70">Pridėti prietaisą į šią paletę</label>
         <div className="flex flex-wrap gap-2">
           <input
             ref={addInputRef}
             value={addIan}
-            onChange={(e) => { setAddIan(e.target.value); setAddError(""); }}
+            onChange={(e) => { setAddIan(e.target.value.replace(/\D/g, "")); setAddError(""); }}
             placeholder="IAN kodas"
+            inputMode="numeric"
             autoComplete="off"
             className="input-field flex-1 font-mono"
           />
@@ -270,7 +277,7 @@ export default function PalletDetail() {
 
       <div className="panel divide-y divide-ink-900/5">
         {items.length === 0 ? (
-          <p className="p-6 text-center text-sm text-ink-600/50">Prekių dar nepridėta.</p>
+          <p className="p-6 text-center text-sm text-ink-600/50">Prietaisų dar nepridėta.</p>
         ) : (
           items.map((item) => (
             <div key={item.id} className="flex items-center justify-between p-4">
@@ -315,7 +322,7 @@ export default function PalletDetail() {
   );
 }
 
-// Prekės redagavimo modalas — ian/name/quantity/notes. Status ir pallet_id
+// Prietaiso redagavimo modalas — ian/name/quantity/notes. Status ir pallet_id
 // čia nekeičiami tiesiogiai (statusui yra atskiras StatusBadge/darbo eigos
 // valdymas, o paletei priklausymą keičia "Pašalinti iš paletės" veiksmas).
 function EditItemModal({ item, onClose, onSave }) {
@@ -352,7 +359,8 @@ function EditItemModal({ item, onClose, onSave }) {
             <label className="mb-1 block text-xs font-semibold text-ink-600/70">IAN kodas</label>
             <input
               value={form.ian}
-              onChange={(e) => setForm({ ...form, ian: e.target.value })}
+              onChange={(e) => setForm({ ...form, ian: e.target.value.replace(/\D/g, "") })}
+              inputMode="numeric"
               className="input-field font-mono"
               required
             />

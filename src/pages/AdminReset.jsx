@@ -24,7 +24,7 @@ export default function AdminReset() {
       setResult({ ok: false, message: `Klaida: ${error.message}` });
     } else {
       setInput("");
-      setResult({ ok: true, message: "Visi duomenys ištrinti. Paletžų numeracija grąžinta į 1." });
+      setResult({ ok: true, message: "Visi duomenys ištrinti. Palečių numeracija grąžinta į 1." });
     }
   }
 
@@ -43,7 +43,7 @@ export default function AdminReset() {
         <div className="space-y-1 text-sm text-signal-red">
           <p className="font-bold">DĖMESIO: veiksmas negrįžtamas</p>
           <p>
-            Šis veiksmas negrįžtamai ištrins <strong>VISUS</strong> prekių, paletžų ir
+            Šis veiksmas negrįžtamai ištrins <strong>VISUS</strong> prietaisų, palečių ir
             siuntų įrašus duomenų bazėje. Naudokite tik testavimui.
           </p>
         </div>

@@ -20,3 +20,16 @@ export function prettifyDestination(destination) {
     .map((part) => (part ? part.charAt(0).toUpperCase() + part.slice(1) : part))
     .join(" - ");
 }
+
+// "grizzly_prietaisai" -> { manufacturer: "Grizzly", itemType: "Prietaisai" }
+export function splitDestination(destination) {
+  if (!destination || destination === UNCLASSIFIED) return { manufacturer: "Nepriskirta", itemType: "—" };
+  const idx = destination.indexOf("_");
+  if (idx === -1) return { manufacturer: destination, itemType: "—" };
+  const m = destination.slice(0, idx);
+  const t = destination.slice(idx + 1);
+  return {
+    manufacturer: m ? m.charAt(0).toUpperCase() + m.slice(1) : m,
+    itemType: t ? t.charAt(0).toUpperCase() + t.slice(1) : t,
+  };
+}

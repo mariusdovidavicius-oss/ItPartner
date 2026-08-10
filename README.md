@@ -33,7 +33,6 @@ warehouse-app/
     │   └── StatusBadge.jsx
     └── pages/
         ├── ScanEntry.jsx            ← "/" — IAN skenavimas/registravimas, atviros paletės
-        ├── ItemsTable.jsx           ← "/prekes" — realaus laiko lentelė, paieška, filtrai, redagavimas
         ├── Pallets.jsx              ← "/paletes" — laukiančios paletės, rankinis siuntų formavimas, Excel eksportas
         ├── PalletDetail.jsx         ← "/paletes/:id" — paletės turinys, būsenos keitimas, prekės pašalinimas
         ├── CatalogImport.jsx        ← "/katalogas" — admin: katalogo (IAN → pavadinimas/gamintojas/tipas) importas iš Excel/CSV
@@ -182,7 +181,6 @@ npm run preview    # patikrinti build'ą lokaliai
 ## 5. Kaip veikia pagrindiniai srautai
 
 - **Skenavimas (`/`)** — didelis mono šrifto laukas priima skenerio arba rankinę įvestį. Skeneris veikia kaip klaviatūra + Enter, todėl papildomos integracijos nereikia. Nuskenavus IAN kodą, sistema jį ieško `catalog` lentelėje, automatiškai užpildo pavadinimą ir apskaičiuoja paskirtį (gamintojas + tipas). Prekė automatiškai priskiriama atviros tos paskirties paletės (jei tokios nėra — sukuriama nauja), o skenuojant tą patį IAN toje pačioje paletėje pakartotinai — didinamas `quantity`, o ne kuriamas naujas įrašas. Puslapyje matomos visos šiuo metu atviros paletės su galimybe pažymėti „Išvežta“ (uždaryti).
-- **Prekių lentelė (`/prekes`)** — duomenys atsinaujina realiu laiku per Supabase Realtime (`postgres_changes` prenumerata), be puslapio perkrovimo. Yra paieška (IAN/pavadinimas/kategorija), filtras pagal būseną, redagavimo langas (įskaitant kiekį ir paletę) ir trynimas.
 - **Paletės (`/paletes`)** — rodomos uždarytos, bet siuntai dar nepriskirtos paletės, filtruojamos pagal paskirtį; vartotojas pažymi checkbox'ais kelias paletes ir vienu veiksmu pažymi jas kaip išvežtas (sukuriama nauja siunta) arba atsisiunčia Excel sąrašą pagal paletę/pavadinimą/kiekį/IAN kodus. Žemiau matoma jau išsiųstų siuntų istorija su galimybe pakartotinai atsisiųsti Excel.
 - **Paletės detalė (`/paletes/:id`)** — matomas visas paletės turinys (IAN, pavadinimas, kiekis, būsena), galima pašalinti prekę iš paletės arba keisti pačios paletės būseną (formuojama → uždaryta → išsiųsta → pristatyta).
 - **Katalogo importas (`/katalogas`, admin)** — Excel/CSV įkėlimas, stulpelio su „Pavadinimas (IAN)“ tekstu pasirinkimas (IAN automatiškai ištraukiamas iš skliaustelių), nebūtini gamintojo/tipo stulpeliai paskirties skaičiavimui. Importas veikia partijomis (upsert pagal IAN), rodo progresą ir suvestinę (nauji/atnaujinti/nepavykę).

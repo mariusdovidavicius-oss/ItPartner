@@ -1,14 +1,23 @@
+import { useState } from "react";
 import { NavLink, Outlet } from "react-router-dom";
-import { ScanLine, Table2, PackageSearch, Boxes } from "lucide-react";
+import { ScanLine, PackageSearch, Boxes, ChevronDown } from "lucide-react";
 
-const NAV_ITEMS = [
-  { to: "/",        label: "Skenavimas",    icon: ScanLine, end: true },
-  { to: "/prekes",  label: "Prekių lentelė", icon: Table2 },
-  { to: "/paletes", label: "Paletės",        icon: Boxes }
+// Meniu punktai sugrupuoti pagal modulį — kai atsiras naujų programos dalių
+// (ne tik sandėlis), joms tiesiog reikės naujos grupės su sava antrašte.
+const NAV_GROUPS = [
+  {
+    label: "Palečių išvežimas",
+    items: [
+      { to: "/",        label: "Prietaisų registravimas", icon: ScanLine, end: true },
+      { to: "/paletes", label: "Paletės",     icon: Boxes }
+    ]
+  }
 ];
 
-function NavItems({ orientation }) {
-  return NAV_ITEMS.map(({ to, label, icon: Icon, end }) => (
+const NAV_ITEMS = NAV_GROUPS.flatMap((g) => g.items);
+
+function NavLinkItem({ to, label, icon: Icon, end, orientation }) {
+  return (
     <NavLink
       key={to}
       to={to}
@@ -28,7 +37,56 @@ function NavItems({ orientation }) {
       <Icon size={orientation === "vertical" ? 18 : 20} strokeWidth={2.2} />
       {label}
     </NavLink>
-  ));
+  );
+}
+
+// Sidebar'e (vertical) grupės iškleidžiamos/suskleidžiamos paspaudus
+// antraštę (numatytai — iškleistos); apatiniame mobiliame meniu (horizontal)
+// grupės sulieknamos į vieną plokščią eilutę — ten vietos antraštėms nėra.
+function NavItems({ orientation }) {
+  const [collapsed, setCollapsed] = useState(() => new Set());
+
+  if (orientation === "horizontal") {
+    return NAV_ITEMS.map((item) => (
+      <NavLinkItem key={item.to} {...item} orientation={orientation} />
+    ));
+  }
+
+  function toggleGroup(label) {
+    setCollapsed((prev) => {
+      const next = new Set(prev);
+      if (next.has(label)) next.delete(label);
+      else next.add(label);
+      return next;
+    });
+  }
+
+  return NAV_GROUPS.map((group) => {
+    const isCollapsed = collapsed.has(group.label);
+    return (
+      <div key={group.label} className="mb-1">
+        <button
+          type="button"
+          onClick={() => toggleGroup(group.label)}
+          className="mb-1 flex w-full items-center justify-between px-3.5 py-1.5 text-xs font-semibold uppercase tracking-wide text-white/50 hover:text-white/70"
+        >
+          {group.label}
+          <ChevronDown
+            size={13}
+            strokeWidth={2.5}
+            className={`transition-transform ${isCollapsed ? "-rotate-90" : ""}`}
+          />
+        </button>
+        {!isCollapsed && (
+          <div className="flex flex-col gap-1">
+            {group.items.map((item) => (
+              <NavLinkItem key={item.to} {...item} orientation={orientation} />
+            ))}
+          </div>
+        )}
+      </div>
+    );
+  });
 }
 
 export default function Layout() {

@@ -1,4 +1,4 @@
-// Įrankio (prekės) būsenos gyvavimo ciklas
+// Įrankio (prietaiso) būsenos gyvavimo ciklas
 export const ITEM_STATUSES = [
   { value: "registered", label: "Užregistruota", color: "blue" },
   { value: "checked", label: "Patikrinta", color: "amber" },

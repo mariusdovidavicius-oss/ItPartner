@@ -2,26 +2,13 @@ import { useEffect, useMemo, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import {
   Loader2, ChevronRight, Boxes, CheckCircle2,
-  FileSpreadsheet, Send, Clock, CheckSquare, Square, PackageCheck
+  FileSpreadsheet, Send, Clock, CheckSquare, Square, PackageCheck, Printer, Eye
 } from "lucide-react";
-import ExcelJS from "exceljs";
 import { supabase } from "../lib/supabaseClient";
-import { prettifyDestination, UNCLASSIFIED } from "../lib/destination";
-
-function DestinationBadge({ destination }) {
-  const isUnclassified = !destination || destination === UNCLASSIFIED;
-  return (
-    <span
-      className={`ml-2 inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${
-        isUnclassified
-          ? "border-signal-red/30 bg-signal-red/10 text-signal-red"
-          : "border-signal-orange/30 bg-signal-orange/10 text-signal-orange"
-      }`}
-    >
-      {prettifyDestination(destination)}
-    </span>
-  );
-}
+import { prettifyDestination, splitDestination, UNCLASSIFIED } from "../lib/destination";
+import { printPalletLabel, printPalletLabels } from "../lib/printLabel";
+import { exportPalletsToExcel } from "../lib/exportExcel";
+import DestinationBadge from "../components/DestinationBadge";
 
 export default function Pallets() {
   const location = useLocation();
@@ -44,6 +31,7 @@ export default function Pallets() {
   const [marking, setMarking] = useState(false);
   const [historyDownloadingId, setHistoryDownloadingId] = useState(null);
   const [notice, setNotice] = useState("");
+  const [shipmentHistoryLimit, setShipmentHistoryLimit] = useState(5);
 
   useEffect(() => {
     if (location.state?.closedMessage) {
@@ -66,10 +54,11 @@ export default function Pallets() {
   }, []);
 
   // Pasirinkimą laikom tik vienos paskirties viduje — keičiant filtrą jį išvalome,
-  // kad neliktų pažymėtų paletžų iš dabar nebematomos paskirties.
+  // kad neliktų pažymėtų palečių iš dabar nebematomos paskirties.
   useEffect(() => {
     setSelectedClosed(new Set());
     setSelectedReady(new Set());
+    setShipmentHistoryLimit(5);
   }, [activeFilter]);
 
   async function load() {
@@ -136,10 +125,13 @@ export default function Pallets() {
 
   // Filtro mygtukai generuojami dinamiškai iš to, kas realiai yra duomenyse —
   // jokio fiksuoto sąrašo, naujos paskirtys atsiranda automatiškai.
+  // Filtro mygtukai rodomi TIK toms paskirtims, kurios dar turi laukiančių/paruoštų
+  // (t. y. neišvežtų) palečių — jei visos konkrečios paskirties paletės jau
+  // išvežtos, jos mygtukas filtro juostoje nebesirodo.
   const destinationFilters = useMemo(() => {
     const set = new Set();
-    pallets.forEach((p) => set.add(p.destination || UNCLASSIFIED));
-    shipments.forEach((s) => set.add(s.destination || UNCLASSIFIED));
+    closedPallets.forEach((p) => set.add(p.destination || UNCLASSIFIED));
+    readyPallets.forEach((p) => set.add(p.destination || UNCLASSIFIED));
     const sorted = Array.from(set).sort((a, b) =>
       prettifyDestination(a).localeCompare(prettifyDestination(b))
     );
@@ -147,7 +139,16 @@ export default function Pallets() {
       { value: "all", label: "Visos" },
       ...sorted.map((d) => ({ value: d, label: prettifyDestination(d) }))
     ];
-  }, [pallets, shipments]);
+  }, [closedPallets, readyPallets]);
+
+  // Jei aktyviai pasirinkta paskirtis dingsta iš filtro juostos (jos paskutinė
+  // paletė ką tik buvo išvežta), grąžiname į "Visos", kad neliktų "pakibusio"
+  // filtro be matomo aktyvaus mygtuko.
+  useEffect(() => {
+    if (activeFilter !== "all" && !destinationFilters.some((f) => f.value === activeFilter)) {
+      setActiveFilter("all");
+    }
+  }, [destinationFilters, activeFilter]);
 
   const closedPalletsFiltered = useMemo(
     () => closedPallets.filter((p) => activeFilter === "all" || p.destination === activeFilter),
@@ -164,6 +165,11 @@ export default function Pallets() {
     [shipments, activeFilter]
   );
 
+  const visibleShipments = useMemo(
+    () => shipmentsFiltered.slice(0, shipmentHistoryLimit),
+    [shipmentsFiltered, shipmentHistoryLimit]
+  );
+
   const shipmentPalletsMap = useMemo(() => {
     const map = {};
     pallets.forEach((p) => {
@@ -175,7 +181,7 @@ export default function Pallets() {
   }, [pallets]);
 
   // Pasirinkimas galimas tik kai peržiūrima konkreti paskirtis — taip niekada
-  // negalima pažymėti paletžų iš skirtingų paskirčių vienu metu (nei paruošimui,
+  // negalima pažymėti palečių iš skirtingų paskirčių vienu metu (nei paruošimui,
   // nei siuntai formuoti).
   const selectionDisabled = activeFilter === "all";
 
@@ -231,101 +237,9 @@ export default function Pallets() {
     return p.number ? `${p.number} paletė` : p.code;
   }
 
-  function splitDestination(destination) {
-    if (!destination || destination === UNCLASSIFIED) return { manufacturer: "Nepriskirta", itemType: "—" };
-    const idx = destination.indexOf("_");
-    if (idx === -1) return { manufacturer: destination, itemType: "—" };
-    const m = destination.slice(0, idx);
-    const t = destination.slice(idx + 1);
-    return {
-      manufacturer: m ? m.charAt(0).toUpperCase() + m.slice(1) : m,
-      itemType: t ? t.charAt(0).toUpperCase() + t.slice(1) : t,
-    };
-  }
-
   function formatDate(ts) {
     if (!ts) return "—";
     return new Date(ts).toLocaleDateString("lt-LT");
-  }
-
-  // Bendra Excel generavimo funkcija — naudojama tiek pažymėtoms
-  // paletėms, tiek atsisiunčiant jau išvežtos siuntos suvestinę pakartotinai.
-  // Saugikliui: atsisako generuoti, jei sąraše sumaišytos abi paskirtys,
-  // kad vadybininkei nesusimaišytų sandėliai viename faile.
-  //
-  // Kiekviena paletė gauna SAVO atskirą lentelę TAME PAČIAME lape (tarpas
-  // tarp jų): A1 = "<paletė> (<supakavimo data>)", A2/B2 = stulpelių
-  // antraštės "Pavadinimas"/"Kiekis". Pavadinimo stulpelyje IAN kodas
-  // pridedamas tiesiogiai prie pavadinimo — "<pavadinimas>(<IAN>)" — todėl
-  // atskiro IAN stulpelio nebėra, ir kiekvienas įrašas (ne pagal pavadinimą
-  // sugrupuotas) rodomas savo eilutėje.
-  async function exportPalletsToExcel(palletList, filename) {
-    const destinationsInList = new Set(palletList.map((p) => p.destination || UNCLASSIFIED));
-    if (destinationsInList.size > 1) {
-      setNotice("Klaida: negalima generuoti Excel su paletėmis iš skirtingų paskirčių vienu metu.");
-      return false;
-    }
-
-    const sorted = [...palletList].sort((a, b) => (a.number || 0) - (b.number || 0));
-    const palletIds = sorted.map((p) => p.id);
-    let itemsData = [];
-    if (palletIds.length > 0) {
-      const { data } = await supabase
-        .from("items")
-        .select("pallet_id, ian, name, quantity")
-        .in("pallet_id", palletIds)
-        .order("created_at", { ascending: true });
-      itemsData = data || [];
-    }
-
-    const workbook = new ExcelJS.Workbook();
-    const sheet = workbook.addWorksheet("Paletės");
-    sheet.columns = [{ width: 60 }, { width: 10 }];
-
-    const thin = { style: "thin" };
-    const fullBorder = { top: thin, left: thin, bottom: thin, right: thin };
-
-    sorted.forEach((p, index) => {
-      if (index > 0) sheet.addRow([]); // tuščia eilutė tarp paletžų lentelių
-
-      const headerRow = sheet.addRow([`${palletLabel(p)} (${formatDate(p.packed_at)})`]);
-      sheet.mergeCells(headerRow.number, 1, headerRow.number, 2);
-      headerRow.getCell(1).font = { bold: true };
-      headerRow.getCell(1).border = fullBorder;
-      headerRow.getCell(2).border = fullBorder;
-
-      const colHeaderRow = sheet.addRow(["Pavadinimas", "Kiekis"]);
-      colHeaderRow.eachCell({ includeEmpty: true }, (cell) => {
-        cell.font = { bold: true };
-        cell.border = fullBorder;
-      });
-
-      const palletItems = itemsData.filter((i) => i.pallet_id === p.id);
-      const dataRows = palletItems.length === 0
-        ? [["(tuščia paletė)", 0]]
-        : palletItems.map((item) => [`${item.name || "(be pavadinimo)"}(${item.ian})`, item.quantity || 1]);
-
-      dataRows.forEach((r) => {
-        const row = sheet.addRow(r);
-        row.getCell(1).border = fullBorder;
-        row.getCell(2).border = fullBorder;
-      });
-    });
-
-    const buffer = await workbook.xlsx.writeBuffer();
-    const blob = new Blob([buffer], {
-      type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = filename;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
-
-    return true;
   }
 
   async function handleDownloadSelected() {
@@ -333,10 +247,11 @@ export default function Pallets() {
     setDownloading(true);
     const selectedPallets = readyPalletsFiltered.filter((p) => selectedReady.has(p.id));
     const suffix = activeFilter !== "all" ? `-${activeFilter}` : "";
-    await exportPalletsToExcel(
+    const result = await exportPalletsToExcel(
       selectedPallets,
       `Paletes-${new Date().toISOString().slice(0, 10)}${suffix}.xlsx`
     );
+    if (!result.ok) setNotice(result.message);
     setDownloading(false);
   }
 
@@ -436,8 +351,25 @@ export default function Pallets() {
   async function handleDownloadHistory(shipment) {
     setHistoryDownloadingId(shipment.id);
     const shipmentPallets = shipmentPalletsMap[shipment.id] || [];
-    await exportPalletsToExcel(shipmentPallets, `${shipment.code}.xlsx`);
+    const result = await exportPalletsToExcel(shipmentPallets, `${shipment.code}.xlsx`);
+    if (!result.ok) setNotice(result.message);
     setHistoryDownloadingId(null);
+  }
+
+  // Spausdina pažymėtų paletžų etiketes vienu metu (tinkleliu ant kiek reikia
+  // A4 lapų) — rikiuojama pagal numerį, kad lape būtų nuosekli tvarka.
+  function handlePrintSelectedClosed() {
+    const selected = closedPalletsFiltered
+      .filter((p) => selectedClosed.has(p.id))
+      .sort((a, b) => (a.number || 0) - (b.number || 0));
+    printPalletLabels(selected);
+  }
+
+  function handlePrintSelectedReady() {
+    const selected = readyPalletsFiltered
+      .filter((p) => selectedReady.has(p.id))
+      .sort((a, b) => (a.number || 0) - (b.number || 0));
+    printPalletLabels(selected);
   }
 
   return (
@@ -517,7 +449,7 @@ export default function Pallets() {
         ) : closedPalletsFiltered.length === 0 ? (
           <div className="flex items-center gap-3 py-4 text-sm text-ink-600/60">
             <Clock size={16} className="shrink-0 text-ink-600/30" />
-            Nėra uždarytų paletžų, laukiančių paruošimo.
+            Nėra uždarytų palečių, laukiančių paruošimo.
           </div>
         ) : (
           <>
@@ -526,7 +458,7 @@ export default function Pallets() {
                 <thead className="border-b border-ink-900/5 bg-ink-900/[0.02] text-xs uppercase tracking-wide text-ink-600/60">
                   <tr>
                     <th className="w-10 px-4 py-3"></th>
-                    <th className="px-4 py-3 font-semibold">Nr.</th>
+                    <th className="px-4 py-3 font-semibold">Paletė</th>
                     <th className="px-4 py-3 font-semibold">Gamintojas</th>
                     <th className="px-4 py-3 font-semibold">Tipas</th>
                     <th className="px-4 py-3 font-semibold">Uždarymo data</th>
@@ -552,19 +484,29 @@ export default function Pallets() {
                         />
                       </td>
                       <td className="px-4 py-3 font-bold text-ink-900">
-                        {p.number ?? "—"}
+                        {palletLabel(p)}
                       </td>
                       <td className="px-4 py-3 text-ink-900">{manufacturer}</td>
                       <td className="px-4 py-3 text-ink-600/80">{itemType}</td>
                       <td className="px-4 py-3 text-ink-600/70">{formatDate(p.packed_at)}</td>
                       <td className="px-4 py-3 font-mono text-ink-800">{quantities[p.id] || 0}</td>
                       <td className="px-4 py-3 text-right">
-                        <Link
-                          to={`/paletes/${p.id}`}
-                          className="inline-flex items-center gap-1 text-xs font-medium text-signal-orange hover:underline"
-                        >
-                          Peržiūrėti <ChevronRight size={13} />
-                        </Link>
+                        <div className="flex items-center justify-end gap-3">
+                          <button
+                            type="button"
+                            onClick={() => printPalletLabel(p)}
+                            className="inline-flex items-center gap-1 text-xs font-medium text-ink-600/70 hover:text-ink-900"
+                            aria-label="Spausdinti etiketę"
+                          >
+                            <Printer size={13} /> Etiketė
+                          </button>
+                          <Link
+                            to={`/paletes/${p.id}`}
+                            className="inline-flex items-center gap-1 text-xs font-medium text-signal-orange hover:underline"
+                          >
+                            Peržiūrėti <ChevronRight size={13} />
+                          </Link>
+                        </div>
                       </td>
                     </tr>
                     );
@@ -578,17 +520,28 @@ export default function Pallets() {
                 Pažymėta: <strong className="text-ink-900">{selectedClosedCount}</strong> paletė(-ių),{" "}
                 <strong className="text-ink-900">{selectedClosedQty}</strong> vnt.
               </p>
-              <button
-                type="button"
-                onClick={handleMarkSelectedReady}
-                disabled={selectedClosedCount === 0 || markingReady}
-                className="btn-primary"
-              >
-                {markingReady
-                  ? <Loader2 size={15} className="animate-spin" />
-                  : <PackageCheck size={15} />}
-                Pažymėti kaip paruoštą išvežimui
-              </button>
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={handlePrintSelectedClosed}
+                  disabled={selectedClosedCount === 0}
+                  className="btn-secondary"
+                >
+                  <Printer size={15} />
+                  Spausdinti etiketes
+                </button>
+                <button
+                  type="button"
+                  onClick={handleMarkSelectedReady}
+                  disabled={selectedClosedCount === 0 || markingReady}
+                  className="btn-primary"
+                >
+                  {markingReady
+                    ? <Loader2 size={15} className="animate-spin" />
+                    : <PackageCheck size={15} />}
+                  Pažymėti kaip paruoštą išvežimui
+                </button>
+              </div>
             </div>
           </>
         )}
@@ -632,7 +585,7 @@ export default function Pallets() {
         ) : readyPalletsFiltered.length === 0 ? (
           <div className="flex items-center gap-3 py-4 text-sm text-ink-600/60">
             <Clock size={16} className="shrink-0 text-ink-600/30" />
-            Nėra paletžų, paruoštų išvežimui.
+            Nėra palečių, paruoštų išvežimui.
           </div>
         ) : (
           <>
@@ -669,12 +622,22 @@ export default function Pallets() {
                       <td className="px-4 py-3 text-ink-600/70">{formatDate(p.packed_at)}</td>
                       <td className="px-4 py-3 font-mono text-ink-800">{quantities[p.id] || 0}</td>
                       <td className="px-4 py-3 text-right">
-                        <Link
-                          to={`/paletes/${p.id}`}
-                          className="inline-flex items-center gap-1 text-xs font-medium text-signal-orange hover:underline"
-                        >
-                          Peržiūrėti <ChevronRight size={13} />
-                        </Link>
+                        <div className="flex items-center justify-end gap-3">
+                          <button
+                            type="button"
+                            onClick={() => printPalletLabel(p)}
+                            className="inline-flex items-center gap-1 text-xs font-medium text-ink-600/70 hover:text-ink-900"
+                            aria-label="Spausdinti etiketę"
+                          >
+                            <Printer size={13} /> Etiketė
+                          </button>
+                          <Link
+                            to={`/paletes/${p.id}`}
+                            className="inline-flex items-center gap-1 text-xs font-medium text-signal-orange hover:underline"
+                          >
+                            Peržiūrėti <ChevronRight size={13} />
+                          </Link>
+                        </div>
                       </td>
                     </tr>
                   ))}
@@ -688,6 +651,15 @@ export default function Pallets() {
                 <strong className="text-ink-900">{selectedReadyQty}</strong> vnt.
               </p>
               <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={handlePrintSelectedReady}
+                  disabled={selectedReadyCount === 0}
+                  className="btn-secondary"
+                >
+                  <Printer size={15} />
+                  Spausdinti etiketes
+                </button>
                 <button
                   type="button"
                   onClick={handleDownloadSelected}
@@ -725,36 +697,69 @@ export default function Pallets() {
             <p className="text-sm text-ink-600/60">Dar nėra išvežtų siuntų.</p>
           </div>
         ) : (
-          <div className="divide-y divide-ink-900/5">
-            {shipmentsFiltered.map((s) => {
-              const shipmentPallets = shipmentPalletsMap[s.id] || [];
-              const qty = shipmentPallets.reduce((sum, p) => sum + (quantities[p.id] || 0), 0);
-              return (
-                <div key={s.id} className="flex flex-wrap items-center justify-between gap-3 py-3">
-                  <div>
-                    <p className="font-mono text-sm font-semibold text-ink-900">
-                      {s.code}
-                      <DestinationBadge destination={s.destination} />
-                    </p>
-                    <p className="text-xs text-ink-600/60">
-                      Išvežta {formatDate(s.sent_at)} &middot; {shipmentPallets.length} paletė(-ių) &middot; {qty} vnt.
-                    </p>
+          <>
+            <div className="divide-y divide-ink-900/5">
+              {visibleShipments.map((s) => {
+                const shipmentPallets = shipmentPalletsMap[s.id] || [];
+                const qty = shipmentPallets.reduce((sum, p) => sum + (quantities[p.id] || 0), 0);
+                return (
+                  <div key={s.id} className="flex flex-wrap items-center justify-between gap-3 py-3">
+                    <div>
+                      <p className="font-mono text-sm font-semibold text-ink-900">
+                        {s.code}
+                        <DestinationBadge destination={s.destination} />
+                      </p>
+                      <p className="text-xs text-ink-600/60">
+                        Išvežta {formatDate(s.sent_at)} &middot; {shipmentPallets.length} paletė(-ių) &middot; {qty} vnt.
+                      </p>
+                    </div>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Link to={`/siuntos/${s.id}`} className="btn-secondary">
+                        <Eye size={14} />
+                        Peržiūrėti
+                      </Link>
+                      <button
+                        type="button"
+                        onClick={() => handleDownloadHistory(s)}
+                        disabled={historyDownloadingId === s.id || shipmentPallets.length === 0}
+                        className="btn-secondary"
+                      >
+                        {historyDownloadingId === s.id
+                          ? <Loader2 size={14} className="animate-spin" />
+                          : <FileSpreadsheet size={14} />}
+                        Atsisiųsti Excel
+                      </button>
+                    </div>
                   </div>
+                );
+              })}
+            </div>
+            {shipmentsFiltered.length > 5 && (
+              <div className="flex gap-2">
+                {shipmentsFiltered.length > visibleShipments.length && (
                   <button
                     type="button"
-                    onClick={() => handleDownloadHistory(s)}
-                    disabled={historyDownloadingId === s.id || shipmentPallets.length === 0}
-                    className="btn-secondary"
+                    onClick={() => setShipmentHistoryLimit((n) => n + 5)}
+                    className="btn-secondary flex-1 justify-center"
                   >
-                    {historyDownloadingId === s.id
-                      ? <Loader2 size={14} className="animate-spin" />
-                      : <FileSpreadsheet size={14} />}
-                    Atsisiųsti Excel
+                    Rodyti daugiau ({shipmentsFiltered.length - visibleShipments.length} liko)
                   </button>
-                </div>
-              );
-            })}
-          </div>
+                )}
+                {shipmentHistoryLimit > 5 && (
+                  <button
+                    type="button"
+                    onClick={() => setShipmentHistoryLimit(5)}
+                    className="btn-secondary flex-1 justify-center"
+                  >
+                    Rodyti mažiau
+                  </button>
+                )}
+                <Link to="/siuntos" className="btn-secondary flex-1 justify-center">
+                  Rodyti visas
+                </Link>
+              </div>
+            )}
+          </>
         )}
       </div>
     </div>
