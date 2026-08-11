@@ -1,6 +1,8 @@
 -- Paleisti Supabase Dashboard → SQL Editor
 -- Sukuria reset_test_data() funkciją testavimo duomenų išvalymui.
--- Tik ši funkcija leidžiama anon raktui — jokių platesnių teisių.
+-- Reikalauja prisijungusio admin vartotojo (žr. migrate_add_parts_permissions.sql
+-- is_admin() funkciją) — žr. taip pat migrate_admin_reset_require_admin.sql,
+-- kuri šią funkciją vėliau apribojo tik adminams.
 
 create or replace function public.reset_test_data()
 returns json

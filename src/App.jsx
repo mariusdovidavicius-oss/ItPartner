@@ -29,7 +29,7 @@ export default function App() {
         <Route path="/priedai/vartotojai" element={<RequirePermission permission="admin"><PartsUsers /></RequirePermission>} />
         {/* Administraciniai puslapiai — tik tiesioginiu adresu, be nuorodos navigacijoje */}
         <Route path="/katalogas" element={<CatalogImport />} />
-        <Route path="/admin-reset" element={<AdminReset />} />
+        <Route path="/admin-reset" element={<RequirePermission permission="admin"><AdminReset /></RequirePermission>} />
       </Route>
     </Routes>
   );
