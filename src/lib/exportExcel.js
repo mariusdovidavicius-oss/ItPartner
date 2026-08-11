@@ -92,3 +92,58 @@ export async function exportPalletsToExcel(palletList, filename) {
 
   return { ok: true };
 }
+
+// Priedų (parts) sąrašo eksportas — viena plokščia lentelė, naudojama
+// /priedai puslapyje (eksportuoja tuo metu matomą, t.y. paieškos filtrą
+// atitinkantį, sąrašą).
+export async function exportPartsToExcel(partsList, filename) {
+  const workbook = new ExcelJS.Workbook();
+  const sheet = workbook.addWorksheet("Priedai");
+  sheet.columns = [
+    { width: 10 }, { width: 22 }, { width: 28 }, { width: 16 },
+    { width: 10 }, { width: 12 }, { width: 40 }
+  ];
+
+  const thin = { style: "thin" };
+  const fullBorder = { top: thin, left: thin, bottom: thin, right: thin };
+
+  const headerRow = sheet.addRow([
+    "Lokacija", "Pagrindinis modelis", "Pavadinimas", "Detalės kodas",
+    "Kiekis", "El. p-vė", "Suderinami modeliai"
+  ]);
+  headerRow.eachCell({ includeEmpty: true }, (cell) => {
+    cell.font = { bold: true };
+    cell.border = fullBorder;
+  });
+
+  const sorted = [...partsList].sort((a, b) => (a.location || 0) - (b.location || 0));
+  sorted.forEach((p) => {
+    const row = sheet.addRow([
+      p.location ?? "",
+      p.main_model || "",
+      p.name || "",
+      p.part_code || "",
+      p.quantity ?? 0,
+      p.online_store ? "Taip" : "Ne",
+      p.compatible_models || ""
+    ]);
+    row.eachCell({ includeEmpty: true }, (cell) => {
+      cell.border = fullBorder;
+    });
+  });
+
+  const buffer = await workbook.xlsx.writeBuffer();
+  const blob = new Blob([buffer], {
+    type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+  });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+
+  return { ok: true };
+}

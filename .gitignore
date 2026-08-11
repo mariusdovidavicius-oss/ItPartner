@@ -7,3 +7,4 @@ dist
 # Katalogo importo šaltiniai — niekada nekomitinti duomenų failų
 *.xlsx
 *.csv
+.vercel

@@ -1,10 +1,11 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { NavLink, Outlet } from "react-router-dom";
-import { ScanLine, PackageSearch, Boxes, ChevronDown, Wrench } from "lucide-react";
+import { ScanLine, PackageSearch, Boxes, ChevronDown, Wrench, Users, LogOut, LogIn } from "lucide-react";
+import { useAuth } from "../lib/AuthProvider";
 
 // Meniu punktai sugrupuoti pagal modulį — kai atsiras naujų programos dalių
 // (ne tik sandėlis), joms tiesiog reikės naujos grupės su sava antrašte.
-const NAV_GROUPS = [
+const BASE_NAV_GROUPS = [
   {
     label: "Palečių išvežimas",
     items: [
@@ -19,8 +20,6 @@ const NAV_GROUPS = [
     ]
   }
 ];
-
-const NAV_ITEMS = NAV_GROUPS.flatMap((g) => g.items);
 
 function NavLinkItem({ to, label, icon: Icon, end, orientation }) {
   return (
@@ -49,11 +48,11 @@ function NavLinkItem({ to, label, icon: Icon, end, orientation }) {
 // Sidebar'e (vertical) grupės iškleidžiamos/suskleidžiamos paspaudus
 // antraštę (numatytai — iškleistos); apatiniame mobiliame meniu (horizontal)
 // grupės sulieknamos į vieną plokščią eilutę — ten vietos antraštėms nėra.
-function NavItems({ orientation }) {
+function NavItems({ orientation, groups }) {
   const [collapsed, setCollapsed] = useState(() => new Set());
 
   if (orientation === "horizontal") {
-    return NAV_ITEMS.map((item) => (
+    return groups.flatMap((g) => g.items).map((item) => (
       <NavLinkItem key={item.to} {...item} orientation={orientation} />
     ));
   }
@@ -67,7 +66,7 @@ function NavItems({ orientation }) {
     });
   }
 
-  return NAV_GROUPS.map((group) => {
+  return groups.map((group) => {
     const isCollapsed = collapsed.has(group.label);
     return (
       <div key={group.label} className="mb-1">
@@ -96,6 +95,17 @@ function NavItems({ orientation }) {
 }
 
 export default function Layout() {
+  const { user, profile, isAdmin, signOut } = useAuth();
+
+  const navGroups = useMemo(() => {
+    if (!isAdmin) return BASE_NAV_GROUPS;
+    return BASE_NAV_GROUPS.map((g) =>
+      g.label === "Priedų sandėlis"
+        ? { ...g, items: [...g.items, { to: "/priedai/vartotojai", label: "Vartotojai", icon: Users }] }
+        : g
+    );
+  }, [isAdmin]);
+
   return (
     <div className="min-h-screen bg-paper lg:flex">
       {/* Desktop / tablet sidebar */}
@@ -111,9 +121,32 @@ export default function Layout() {
             <p className="text-sm font-semibold text-white">Sandėlio valdymas</p>
           </div>
         </div>
-        <nav className="flex flex-col gap-1">
-          <NavItems orientation="vertical" />
+        <nav className="flex flex-1 flex-col gap-1">
+          <NavItems orientation="vertical" groups={navGroups} />
         </nav>
+        <div className="mt-auto border-t border-white/10 px-2 pt-4">
+          {user ? (
+            <div className="flex items-center justify-between gap-2">
+              <span className="truncate text-xs font-medium text-white/60">
+                {profile?.username || "…"}{isAdmin && " · admin"}
+              </span>
+              <button
+                type="button"
+                onClick={signOut}
+                className="flex items-center gap-1 rounded-lg px-2 py-1 text-xs font-medium text-white/60 hover:bg-white/5 hover:text-white"
+              >
+                <LogOut size={13} /> Atsijungti
+              </button>
+            </div>
+          ) : (
+            <NavLink
+              to="/login"
+              className="flex items-center gap-2 rounded-xl px-3.5 py-2.5 text-sm font-medium text-white/70 hover:bg-white/5 hover:text-white"
+            >
+              <LogIn size={16} strokeWidth={2.2} /> Prisijungti
+            </NavLink>
+          )}
+        </div>
       </aside>
 
       {/* Content */}
@@ -125,6 +158,22 @@ export default function Layout() {
             </div>
             <p className="text-sm font-semibold text-ink-900">Sandėlio valdymas</p>
           </div>
+          {user ? (
+            <button
+              type="button"
+              onClick={signOut}
+              className="flex items-center gap-1 text-xs font-medium text-ink-600/60 hover:text-ink-900"
+            >
+              <LogOut size={13} /> {profile?.username}
+            </button>
+          ) : (
+            <NavLink
+              to="/login"
+              className="flex items-center gap-1 text-xs font-medium text-ink-600/60 hover:text-ink-900"
+            >
+              <LogIn size={13} /> Prisijungti
+            </NavLink>
+          )}
         </header>
 
         <main className="mx-auto max-w-6xl px-4 py-5 lg:px-8 lg:py-8">
@@ -134,7 +183,7 @@ export default function Layout() {
 
       {/* Mobile bottom nav */}
       <nav className="fixed inset-x-0 bottom-0 z-20 flex border-t border-ink-900/10 bg-white/95 backdrop-blur lg:hidden">
-        <NavItems orientation="horizontal" />
+        <NavItems orientation="horizontal" groups={navGroups} />
       </nav>
     </div>
   );

@@ -127,22 +127,13 @@ export default function PartsImport() {
 
   const previewRows = parsed.slice(0, 10);
 
+  // Importas eina per import_parts() RPC (SECURITY DEFINER), ne tiesiogiai
+  // per .insert()/.delete() — taip 'import' teisė lieka atskira nuo
+  // 'edit'/'delete', patikrinama pačioje DB funkcijoje.
   async function handleImport() {
     if (!validEntries.length) return;
     setImporting(true);
     setResult(null);
-
-    if (clearExisting) {
-      const { error: deleteError } = await supabase
-        .from("parts")
-        .delete()
-        .neq("id", "00000000-0000-0000-0000-000000000000");
-      if (deleteError) {
-        setImporting(false);
-        setResult({ inserted: 0, failed: failedCount, total: parsed.length, error: deleteError.message });
-        return;
-      }
-    }
 
     const batches = [];
     for (let i = 0; i < validEntries.length; i += BATCH_SIZE) {
@@ -155,12 +146,15 @@ export default function PartsImport() {
     setProgress({ done: 0, total: batches.length });
 
     for (let i = 0; i < batches.length; i++) {
-      const { error } = await supabase.from("parts").insert(batches[i]);
+      const { data, error } = await supabase.rpc("import_parts", {
+        rows: batches[i],
+        clear_existing: i === 0 && clearExisting
+      });
       if (error) {
         errorMessage = error.message;
         break;
       }
-      inserted += batches[i].length;
+      inserted += data ?? batches[i].length;
       setProgress({ done: i + 1, total: batches.length });
     }
 
