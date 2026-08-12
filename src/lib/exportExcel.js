@@ -147,3 +147,61 @@ export async function exportPartsToExcel(partsList, filename) {
 
   return { ok: true };
 }
+
+const WRITEOFF_REASON_LABELS = { parduota: "Parduota", remontui: "Panaudota remontui", kita: "Kita" };
+
+// Priedų nurašymų (parts_writeoffs) sąrašo eksportas — naudojama
+// /priedai/nurasymai puslapyje.
+export async function exportPartsWriteoffsToExcel(writeoffsList, filename) {
+  const workbook = new ExcelJS.Workbook();
+  const sheet = workbook.addWorksheet("Nurašymai");
+  sheet.columns = [
+    { width: 14 }, { width: 28 }, { width: 16 }, { width: 8 },
+    { width: 18 }, { width: 24 }, { width: 16 }
+  ];
+
+  const thin = { style: "thin" };
+  const fullBorder = { top: thin, left: thin, bottom: thin, right: thin };
+
+  const headerRow = sheet.addRow([
+    "Data", "Priedas", "Detalės kodas", "Kiekis", "Priežastis", "Detalė", "Kas"
+  ]);
+  headerRow.eachCell({ includeEmpty: true }, (cell) => {
+    cell.font = { bold: true };
+    cell.border = fullBorder;
+  });
+
+  writeoffsList.forEach((w) => {
+    const detail =
+      w.reason_type === "parduota" ? (w.price != null ? `${w.price} €` : "") :
+      w.reason_type === "remontui" ? (w.rma || "") :
+      (w.reason || "");
+    const row = sheet.addRow([
+      formatDate(w.created_at),
+      w.parts?.name || "",
+      w.parts?.part_code || "",
+      w.quantity ?? 0,
+      WRITEOFF_REASON_LABELS[w.reason_type] || w.reason_type,
+      detail,
+      w.profiles?.username || ""
+    ]);
+    row.eachCell({ includeEmpty: true }, (cell) => {
+      cell.border = fullBorder;
+    });
+  });
+
+  const buffer = await workbook.xlsx.writeBuffer();
+  const blob = new Blob([buffer], {
+    type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+  });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+
+  return { ok: true };
+}

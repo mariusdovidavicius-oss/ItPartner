@@ -1,8 +1,8 @@
 import { useMemo, useState } from "react";
-import * as XLSX from "xlsx";
 import { Upload, FileSpreadsheet, CheckCircle2, AlertCircle, Loader2 } from "lucide-react";
 import { supabase } from "../lib/supabaseClient";
 import { normalizeHeader } from "../lib/excelHeaders";
+import { readSpreadsheetRows } from "../lib/readSpreadsheet";
 
 const BATCH_SIZE = 500;
 
@@ -50,10 +50,7 @@ export default function CatalogImport() {
     setFileName(file.name);
 
     try {
-      const buffer = await file.arrayBuffer();
-      const workbook = XLSX.read(buffer, { type: "array" });
-      const sheet = workbook.Sheets[workbook.SheetNames[0]];
-      const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, raw: false, defval: "" });
+      const rows = await readSpreadsheetRows(file);
       const maxCols = rows.reduce((max, row) => Math.max(max, row.length), 0);
       setSheetRows(rows);
       setColumnCount(maxCols);
@@ -183,7 +180,7 @@ export default function CatalogImport() {
             {fileName || "Spustelėkite ir pasirinkite failą (.xlsx, .csv)"}
           </span>
           <span className="text-xs text-ink-600/50">arba vilkite čia</span>
-          <input type="file" accept=".xlsx,.xls,.csv" className="hidden" onChange={handleFileChange} />
+          <input type="file" accept=".xlsx,.csv" className="hidden" onChange={handleFileChange} />
         </label>
 
         {parseError && (

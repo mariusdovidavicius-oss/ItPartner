@@ -790,10 +790,269 @@ create trigger parts_set_updated_at
 
 alter table public.parts enable row level security;
 
-create policy "Anon and authenticated full access - parts"
-  on public.parts for all
+-- ------------------------------------------------------------
+-- Priedų modulio prisijungimas ir teisės (žr. migrate_add_parts_permissions.sql
+-- esamai DB). Vartotojai neturi el. pašto — jungiasi "ID" (username), kuris
+-- front-end pusėje paverčiamas į vidinį "<id>@parts.local" formatą Supabase
+-- Auth reikmėms. Naujus vartotojus kuria tik adminas per api/create-user.js
+-- arba pirmam adminui — scripts/bootstrap-admin.mjs.
+-- ------------------------------------------------------------
+
+-- 1) profiles — po vieną eilutę kiekvienam auth.users vartotojui
+create table if not exists public.profiles (
+  id         uuid primary key references auth.users (id) on delete cascade,
+  username   text not null,
+  is_admin   boolean not null default false,
+  created_at timestamptz not null default now()
+);
+
+comment on table public.profiles is 'Vieša info apie kiekvieną prisijungusį vartotoją (priedų modulio teisėms).';
+
+-- Naujam auth.users įrašui automatiškai sukuria profiles eilutę.
+create or replace function public.handle_new_parts_user()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  insert into public.profiles (id, username)
+  values (new.id, split_part(new.email, '@', 1))
+  on conflict (id) do nothing;
+  return new;
+end;
+$$;
+
+drop trigger if exists on_auth_user_created_parts on auth.users;
+create trigger on_auth_user_created_parts
+  after insert on auth.users
+  for each row execute function public.handle_new_parts_user();
+
+-- 2) user_permissions — vartotojas × teisė (view/edit/delete/import).
+-- Šis sąrašas turi atitikti src/lib/permissions.js ir api/create-user.js —
+-- DB negali jų importuoti, tad keičiant sąrašą, atnaujinti visas tris vietas.
+create table if not exists public.user_permissions (
+  user_id    uuid not null references public.profiles (id) on delete cascade,
+  permission text not null check (permission in ('view', 'edit', 'delete', 'import')),
+  granted_at timestamptz not null default now(),
+  primary key (user_id, permission)
+);
+
+comment on table public.user_permissions is 'Kiekvienam vartotojui suteiktos priedų modulio teisės.';
+
+-- 3) Pagalbinės funkcijos RLS taisyklėms (SECURITY DEFINER, kad išvengtų
+-- RLS rekursijos tikrinant profiles/user_permissions iš pačių jų taisyklių).
+create or replace function public.is_admin(uid uuid)
+returns boolean
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select coalesce((select is_admin from public.profiles where id = uid), false);
+$$;
+
+create or replace function public.has_permission(uid uuid, perm text)
+returns boolean
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select public.is_admin(uid) or exists (
+    select 1 from public.user_permissions where user_id = uid and permission = perm
+  );
+$$;
+
+grant execute on function public.is_admin(uuid) to authenticated, anon;
+grant execute on function public.has_permission(uuid, text) to authenticated, anon;
+
+-- 4) RLS: profiles ir user_permissions
+alter table public.profiles enable row level security;
+alter table public.user_permissions enable row level security;
+
+create policy "Vartotojas mato savo profilį, adminas visus"
+  on public.profiles for select
+  to authenticated
+  using (id = auth.uid() or public.is_admin(auth.uid()));
+
+create policy "Adminas tvarko profilius"
+  on public.profiles for update
+  to authenticated
+  using (public.is_admin(auth.uid()))
+  with check (public.is_admin(auth.uid()));
+
+create policy "Vartotojas mato savo teises, adminas visas"
+  on public.user_permissions for select
+  to authenticated
+  using (user_id = auth.uid() or public.is_admin(auth.uid()));
+
+create policy "Adminas tvarko teises"
+  on public.user_permissions for all
+  to authenticated
+  using (public.is_admin(auth.uid()))
+  with check (public.is_admin(auth.uid()));
+
+-- 5) RLS: parts — peržiūra vieša (be prisijungimo, /priedai puslapis
+-- pasiekiamas visiems), redagavimas/trynimas reikalauja atitinkamos teisės.
+create policy "Vieša priedų peržiūra"
+  on public.parts for select
   to anon, authenticated
-  using (true)
-  with check (true);
+  using (true);
+
+create policy "Kūrimas/redagavimas pagal 'edit' teisę"
+  on public.parts for insert
+  to authenticated
+  with check (public.has_permission(auth.uid(), 'edit'));
+
+create policy "Atnaujinimas pagal 'edit' teisę"
+  on public.parts for update
+  to authenticated
+  using (public.has_permission(auth.uid(), 'edit'))
+  with check (public.has_permission(auth.uid(), 'edit'));
+
+create policy "Trynimas pagal 'delete' teisę"
+  on public.parts for delete
+  to authenticated
+  using (public.has_permission(auth.uid(), 'delete'));
+
+-- 6) import_parts RPC — masinis Excel importas atskirai nuo 'edit'/'delete',
+-- kad vartotojas su TIK 'import' teise galėtų importuoti, bet negalėtų
+-- rankiniu būdu redaguoti/trinti pavienių įrašų. clear_existing papildomai
+-- reikalauja 'delete' teisės. SECURITY DEFINER apeina eilutės lygio RLS
+-- (pati funkcija patikrina teisę viduje).
+create or replace function public.import_parts(rows jsonb, clear_existing boolean default false)
+returns integer
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  inserted_count integer;
+begin
+  if not public.has_permission(auth.uid(), 'import') then
+    raise exception 'Neturite importo teisės.';
+  end if;
+
+  if clear_existing then
+    if not public.has_permission(auth.uid(), 'delete') then
+      raise exception 'Norint prieš importą išvalyti esamus duomenis, reikia trynimo teisės.';
+    end if;
+    delete from public.parts;
+  end if;
+
+  insert into public.parts (location, main_model, part_code, name, quantity, online_store, compatible_models)
+  select
+    (r->>'location')::integer,
+    nullif(r->>'main_model', ''),
+    r->>'part_code',
+    nullif(r->>'name', ''),
+    coalesce((r->>'quantity')::integer, 0),
+    coalesce((r->>'online_store')::boolean, false),
+    nullif(r->>'compatible_models', '')
+  from jsonb_array_elements(rows) as r;
+
+  get diagnostics inserted_count = row_count;
+  return inserted_count;
+end;
+$$;
+
+grant execute on function public.import_parts(jsonb, boolean) to authenticated;
 
 alter publication supabase_realtime add table public.parts;
+
+-- 7) parts_writeoffs — priedo nurašymas. Sumažina parts.quantity nurodytu
+-- kiekiu ir palieka audito įrašą (kas/kada/kiek/kodėl). Reikalauja
+-- "delete" teisės — ta pati, kuri jau naudojama pavienio priedo trynimui.
+-- Priežastis (reason_type) — "parduota" (su kaina), "remontui" (su RMA
+-- numeriu) arba "kita" (su laisvu tekstu); UI pusėje rodoma kaip dropdown
+-- su papildomu lauku, priklausomu nuo pasirinkimo.
+create table if not exists public.parts_writeoffs (
+  id          uuid primary key default gen_random_uuid(),
+  part_id     uuid not null references public.parts (id) on delete cascade,
+  user_id     uuid references public.profiles (id) on delete set null,
+  quantity    integer not null check (quantity > 0),
+  reason_type text not null check (reason_type in ('parduota', 'remontui', 'kita')),
+  price       numeric(10, 2),
+  rma         text,
+  reason      text,
+  created_at  timestamptz not null default now()
+);
+
+comment on table public.parts_writeoffs is 'Priedų nurašymų (parduota/remontui/kita) audito istorija.';
+
+create index if not exists parts_writeoffs_part_id_idx on public.parts_writeoffs (part_id);
+
+alter table public.parts_writeoffs enable row level security;
+
+create policy "Nurašymų istorija matoma pagal 'delete' teisę"
+  on public.parts_writeoffs for select
+  to authenticated
+  using (public.has_permission(auth.uid(), 'delete'));
+
+create or replace function public.writeoff_part(
+  p_part_id uuid,
+  p_quantity integer,
+  p_reason_type text,
+  p_price numeric default null,
+  p_rma text default null,
+  p_reason text default null
+)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_current_qty integer;
+begin
+  if not public.has_permission(auth.uid(), 'delete') then
+    raise exception 'Neturite nurašymo teisės.';
+  end if;
+
+  if p_quantity is null or p_quantity <= 0 then
+    raise exception 'Nurašomas kiekis turi būti didesnis už nulį.';
+  end if;
+
+  if p_reason_type not in ('parduota', 'remontui', 'kita') then
+    raise exception 'Neteisinga nurašymo priežastis.';
+  end if;
+
+  if p_reason_type = 'parduota' and (p_price is null or p_price <= 0) then
+    raise exception 'Įveskite kainą.';
+  end if;
+
+  if p_reason_type = 'remontui' and (p_rma is null or trim(p_rma) = '') then
+    raise exception 'Įveskite RMA numerį.';
+  end if;
+
+  if p_reason_type = 'kita' and (p_reason is null or trim(p_reason) = '') then
+    raise exception 'Įveskite priežastį.';
+  end if;
+
+  select quantity into v_current_qty from public.parts where id = p_part_id for update;
+  if v_current_qty is null then
+    raise exception 'Priedas nerastas.';
+  end if;
+  if p_quantity > v_current_qty then
+    raise exception 'Nurašomas kiekis (%) negali viršyti turimo likučio (%).', p_quantity, v_current_qty;
+  end if;
+
+  update public.parts set quantity = quantity - p_quantity where id = p_part_id;
+
+  insert into public.parts_writeoffs (part_id, user_id, quantity, reason_type, price, rma, reason)
+  values (
+    p_part_id,
+    auth.uid(),
+    p_quantity,
+    p_reason_type,
+    case when p_reason_type = 'parduota' then p_price else null end,
+    case when p_reason_type = 'remontui' then nullif(trim(p_rma), '') else null end,
+    case when p_reason_type = 'kita' then nullif(trim(p_reason), '') else null end
+  );
+end;
+$$;
+
+grant execute on function public.writeoff_part(uuid, integer, text, numeric, text, text) to authenticated;
+
+alter publication supabase_realtime add table public.parts_writeoffs;

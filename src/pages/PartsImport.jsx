@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
-import * as XLSX from "xlsx";
 import { Upload, FileSpreadsheet, CheckCircle2, AlertCircle, Loader2 } from "lucide-react";
 import { supabase } from "../lib/supabaseClient";
 import { normalizeHeader } from "../lib/excelHeaders";
+import { readSpreadsheetRows } from "../lib/readSpreadsheet";
 
 const BATCH_SIZE = 500;
 
@@ -82,10 +82,7 @@ export default function PartsImport() {
     setFileName(file.name);
 
     try {
-      const buffer = await file.arrayBuffer();
-      const workbook = XLSX.read(buffer, { type: "array" });
-      const sheet = workbook.Sheets[workbook.SheetNames[0]];
-      const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, raw: false, defval: "" });
+      const rows = await readSpreadsheetRows(file);
       const maxCols = rows.reduce((max, row) => Math.max(max, row.length), 0);
       setSheetRows(rows);
       setColumnCount(maxCols);
@@ -183,10 +180,10 @@ export default function PartsImport() {
         <label className="flex cursor-pointer flex-col items-center justify-center gap-2 rounded-xl border-2 border-dashed border-ink-700/15 py-10 text-center hover:border-signal-orange/40 hover:bg-signal-orange/5">
           <Upload size={24} className="text-ink-600/50" />
           <span className="text-sm font-medium text-ink-800">
-            {fileName || "Spustelėkite ir pasirinkite failą (.xlsx, .xls, .csv)"}
+            {fileName || "Spustelėkite ir pasirinkite failą (.xlsx, .csv)"}
           </span>
           <span className="text-xs text-ink-600/50">arba vilkite čia</span>
-          <input type="file" accept=".xlsx,.xls,.csv" className="hidden" onChange={handleFileChange} />
+          <input type="file" accept=".xlsx,.csv" className="hidden" onChange={handleFileChange} />
         </label>
 
         {parseError && (

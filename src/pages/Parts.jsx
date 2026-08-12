@@ -1,18 +1,20 @@
-import { Fragment, useEffect, useMemo, useState } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
 import {
   Search, Loader2, Save, Boxes, Minus, Plus, ChevronLeft, ChevronRight,
-  ChevronDown, ChevronUp, ImageIcon, Pencil, X, PackagePlus, Trash2, Download, AlertCircle
+  ChevronDown, ChevronUp, ImageIcon, Pencil, X, PackagePlus, PackageMinus, Trash2, Download, AlertCircle
 } from "lucide-react";
 import { supabase } from "../lib/supabaseClient";
 import { exportPartsToExcel } from "../lib/exportExcel";
 import { useAuth } from "../lib/AuthProvider";
 
-function normalize(str) {
-  return String(str ?? "").toLowerCase();
+// Apsaugo nuo netyčinio ILIKE wildcard elgesio, jei paieškos tekste yra % arba _.
+function escapeLike(str) {
+  return str.replace(/[%_]/g, (c) => `\\${c}`);
 }
 
 const PAGE_SIZE_OPTIONS = [10, 25, 50, 100];
 const LOW_STOCK_THRESHOLD = 3; // <= šitiek vienetų — žymima kaip mažas likutis
+const SEARCH_DEBOUNCE_MS = 300;
 
 function stockLevel(quantity) {
   const qty = Number(quantity) || 0;
@@ -22,12 +24,14 @@ function stockLevel(quantity) {
 }
 
 export default function Parts() {
-  const { hasPermission } = useAuth();
+  const { user, hasPermission } = useAuth();
   const canEdit = hasPermission("edit");
   const canDelete = hasPermission("delete");
-  const [parts, setParts] = useState([]);
+  const [parts, setParts] = useState([]); // dabartinio puslapio įrašai (paieška/filtrai/puslapiavimas — serverio pusėje)
+  const [totalCount, setTotalCount] = useState(0); // dabartinį filtrą atitinkančių įrašų skaičius (iš DB)
   const [loading, setLoading] = useState(true);
-  const [search, setSearch] = useState("");
+  const [search, setSearch] = useState(""); // rodoma įvesties reikšmė
+  const [debouncedSearch, setDebouncedSearch] = useState(""); // naudojama užklausai, atnaujinama su vėlinimu
   const [quantityDrafts, setQuantityDrafts] = useState({}); // part id -> juodraštis (nekeičiamas realtime reload metu, kad neišsivalytų nebaigtas redagavimas)
   const [savingId, setSavingId] = useState(null);
   const [pageSize, setPageSize] = useState(PAGE_SIZE_OPTIONS[0]);
@@ -38,29 +42,55 @@ export default function Parts() {
   const [editingPart, setEditingPart] = useState(null);
   const [creating, setCreating] = useState(false);
   const [deletingId, setDeletingId] = useState(null);
+  const [writeoffPart, setWriteoffPart] = useState(null);
+  const [writeoffHistory, setWriteoffHistory] = useState({}); // part id -> nurašymų sąrašas
+  const [loadingHistoryId, setLoadingHistoryId] = useState(null);
   const [exporting, setExporting] = useState(false);
   const [locationFilter, setLocationFilter] = useState(""); // "" = visos lokacijos
   const [stockFilter, setStockFilter] = useState("all"); // all | low | out
+  const [locationOptions, setLocationOptions] = useState([]);
   const [actionError, setActionError] = useState("");
 
+  // Paieškos tekstą debounce'iname, kad serverio užklausa nebūtų siunčiama
+  // kas klavišo paspaudimą.
   useEffect(() => {
-    load();
-    const channel = supabase
-      .channel("parts-realtime")
-      .on("postgres_changes", { event: "*", schema: "public", table: "parts" }, load)
-      .subscribe();
-    return () => supabase.removeChannel(channel);
-  }, []);
+    const t = setTimeout(() => setDebouncedSearch(search), SEARCH_DEBOUNCE_MS);
+    return () => clearTimeout(t);
+  }, [search]);
+
+  // Bendra užklausos "kurpimo" funkcija — naudojama ir puslapio įkėlimui
+  // (su .range()), ir Excel eksportui (be .range(), visi filtrą atitinkantys
+  // įrašai), kad paieška/filtrai neišsiskirtų tarp dviejų vietų.
+  function buildQuery(opts = {}) {
+    let query = supabase.from("parts").select(
+      "id, location, main_model, part_code, name, quantity, online_store, compatible_models, notes",
+      opts.count ? { count: opts.count } : undefined
+    );
+
+    const tokens = debouncedSearch.trim().toLowerCase().split(/\s+/).filter(Boolean);
+    tokens.forEach((token) => {
+      const q = escapeLike(token);
+      query = query.or(
+        `part_code.ilike.%${q}%,name.ilike.%${q}%,main_model.ilike.%${q}%,compatible_models.ilike.%${q}%`
+      );
+    });
+
+    if (locationFilter !== "") query = query.eq("location", Number(locationFilter));
+    if (stockFilter === "out") query = query.lte("quantity", 0);
+    if (stockFilter === "low") query = query.gt("quantity", 0).lte("quantity", LOW_STOCK_THRESHOLD);
+
+    return query.order("location", { ascending: true });
+  }
 
   async function load() {
     setLoading(true);
-    const { data } = await supabase
-      .from("parts")
-      .select("id, location, main_model, part_code, name, quantity, online_store, compatible_models, notes")
-      .order("location", { ascending: true });
+    const from = page * pageSize;
+    const to = from + pageSize - 1;
+    const { data, count } = await buildQuery({ count: "exact" }).range(from, to);
 
     const list = data || [];
     setParts(list);
+    setTotalCount(count ?? 0);
 
     setQuantityDrafts((prev) => {
       const next = {};
@@ -81,40 +111,61 @@ export default function Parts() {
     setLoading(false);
   }
 
-  const locationOptions = useMemo(() => {
-    const set = new Set(parts.map((p) => p.location).filter((l) => l !== null && l !== undefined));
-    return [...set].sort((a, b) => a - b);
-  }, [parts]);
+  async function loadLocationOptions() {
+    const { data } = await supabase.from("parts").select("location").not("location", "is", null);
+    const set = new Set((data || []).map((r) => r.location));
+    setLocationOptions([...set].sort((a, b) => a - b));
+  }
 
-  const filtered = useMemo(() => {
-    const tokens = search.trim().toLowerCase().split(/\s+/).filter(Boolean);
-    return parts.filter((p) => {
-      if (tokens.length > 0) {
-        const haystack = [p.part_code, p.name, p.main_model, p.compatible_models]
-          .map(normalize)
-          .join(" ");
-        if (!tokens.every((token) => haystack.includes(token))) return false;
-      }
-      if (locationFilter !== "" && String(p.location) !== locationFilter) return false;
-      if (stockFilter === "low" && stockLevel(p.quantity) === "ok") return false;
-      if (stockFilter === "out" && stockLevel(p.quantity) !== "out") return false;
-      return true;
-    });
-  }, [parts, search, locationFilter, stockFilter]);
-
-  // Puslapiavimas grįžta į pradžią, kai pasikeičia bet kuris filtras arba
-  // puslapio dydis — priešingu atveju likus dabartiniam page indeksui, po
-  // susiaurinto sąrašo galima "iškristi" už rezultatų ribų (tuščias puslapis).
+  // load() naudoja debouncedSearch/locationFilter/stockFilter/page/pageSize
+  // per closure — realtime pranešimas žemiau visada turi kviesti NAUJAUSIĄ
+  // versiją (per loadRef), kitaip liktų prisirišęs prie pirmo render'io metu
+  // buvusių filtrų reikšmių.
+  const loadRef = useRef(load);
   useEffect(() => {
-    setPage(0);
-  }, [search, pageSize, locationFilter, stockFilter]);
+    loadRef.current = load;
+  });
 
-  const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
-  const currentPage = Math.min(page, totalPages - 1);
-  const paginated = useMemo(
-    () => filtered.slice(currentPage * pageSize, currentPage * pageSize + pageSize),
-    [filtered, currentPage, pageSize]
-  );
+  // Filtro pasikeitimas turi grąžinti į 1 puslapį PRIEŠ pakraunant — jei tai
+  // darytume dviejuose atskiruose efektuose (vienas resetina "page", kitas
+  // kviečia load()), load() galėtų suveikti su dar PASENUSIA "page" reikšme
+  // tame pačiame React commit'e ir nusiųsti užklausą su offset'u už rezultatų
+  // ribų (tuščias atsakymas, nors atitikmenų yra). Todėl abu veiksmai
+  // sujungti į vieną efektą, sekantį filtrų "parašą" per ref.
+  const filterKey = `${debouncedSearch}|${locationFilter}|${stockFilter}|${pageSize}`;
+  const prevFilterKey = useRef(filterKey);
+  useEffect(() => {
+    if (filterKey !== prevFilterKey.current) {
+      prevFilterKey.current = filterKey;
+      if (page !== 0) {
+        setPage(0);
+        return; // load() suveiks pakartotinai, kai "page" efektyviai taps 0
+      }
+    }
+    load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filterKey, page]);
+
+  useEffect(() => {
+    loadLocationOptions();
+    const channel = supabase
+      .channel("parts-realtime")
+      .on("postgres_changes", { event: "*", schema: "public", table: "parts" }, () => {
+        loadRef.current();
+        loadLocationOptions();
+      })
+      .subscribe();
+    return () => supabase.removeChannel(channel);
+  }, []);
+
+  const totalPages = Math.max(1, Math.ceil(totalCount / pageSize));
+
+  // Jei filtras arba trynimas kitur sumažino rezultatų skaičių ir dabartinis
+  // puslapis liko už ribų, grąžina į paskutinį galiojantį puslapį.
+  useEffect(() => {
+    if (page > totalPages - 1) setPage(Math.max(0, totalPages - 1));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [totalCount, pageSize]);
 
   function toggleExpand(id) {
     setExpandedIds((prev) => {
@@ -123,6 +174,34 @@ export default function Parts() {
       else next.add(id);
       return next;
     });
+    if (canDelete && !(id in writeoffHistory)) loadWriteoffHistory(id);
+  }
+
+  async function loadWriteoffHistory(partId) {
+    setLoadingHistoryId(partId);
+    const { data } = await supabase
+      .from("parts_writeoffs")
+      .select("id, quantity, reason_type, price, rma, reason, created_at, profiles(username)")
+      .eq("part_id", partId)
+      .order("created_at", { ascending: false });
+    setWriteoffHistory((prev) => ({ ...prev, [partId]: data || [] }));
+    setLoadingHistoryId(null);
+  }
+
+  // Grąžina klaidos tekstą, jei nepavyko — WriteoffModal tada rodo ją
+  // formoje ir NEUŽDARO jos.
+  async function handleWriteoff(part, { quantity, reasonType, price, rma, reason }) {
+    const { error } = await supabase.rpc("writeoff_part", {
+      p_part_id: part.id,
+      p_quantity: quantity,
+      p_reason_type: reasonType,
+      p_price: price,
+      p_rma: rma,
+      p_reason: reason
+    });
+    if (error) return error.message;
+    setWriteoffPart(null);
+    loadWriteoffHistory(part.id);
   }
 
   async function handleSaveQuantity(part) {
@@ -201,7 +280,8 @@ export default function Parts() {
 
   async function handleExport() {
     setExporting(true);
-    await exportPartsToExcel(filtered, `Priedai-${new Date().toISOString().slice(0, 10)}.xlsx`);
+    const { data } = await buildQuery();
+    await exportPartsToExcel(data || [], `Priedai-${new Date().toISOString().slice(0, 10)}.xlsx`);
     setExporting(false);
   }
 
@@ -213,6 +293,12 @@ export default function Parts() {
           Priedų (atsarginių dalių) sandėlio paieška ir kiekio redagavimas.
         </p>
       </div>
+
+      {!user && (
+        <div className="rounded-xl border border-ink-700/10 bg-ink-900/[0.02] px-3.5 py-2.5 text-sm text-ink-600/70">
+          Peržiūros režimas — bet kas gali matyti sąrašą. Norėdami redaguoti kiekius ar duomenis, prisijunkite (viršuje).
+        </div>
+      )}
 
       {actionError && (
         <div className="flex items-start gap-2 rounded-xl border border-signal-red/20 bg-signal-red/5 p-3.5 text-sm text-signal-red">
@@ -255,7 +341,7 @@ export default function Parts() {
         <button
           type="button"
           onClick={handleExport}
-          disabled={exporting || filtered.length === 0}
+          disabled={exporting || totalCount === 0}
           className="btn-secondary shrink-0"
         >
           {exporting ? <Loader2 size={15} className="animate-spin" /> : <Download size={15} />}
@@ -314,11 +400,13 @@ export default function Parts() {
           <div className="flex justify-center py-10 text-ink-600/50">
             <Loader2 className="animate-spin" size={20} />
           </div>
-        ) : filtered.length === 0 ? (
+        ) : parts.length === 0 ? (
           <div className="flex flex-col items-center gap-2 py-10 text-center">
             <Boxes className="text-ink-600/30" size={24} />
             <p className="text-sm text-ink-600/60">
-              {parts.length === 0 ? "Priedų dar nėra — importuokite juos per /priedai/importas." : "Pagal paiešką nieko nerasta."}
+              {totalCount === 0 && debouncedSearch.trim() === "" && locationFilter === "" && stockFilter === "all"
+                ? "Priedų dar nėra — importuokite juos per /priedai/importas."
+                : "Pagal paiešką nieko nerasta."}
             </p>
           </div>
         ) : (
@@ -336,7 +424,7 @@ export default function Parts() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-ink-900/5">
-                {paginated.map((p) => {
+                {parts.map((p) => {
                   const draft = quantityDrafts[p.id] ?? "";
                   const changed = draft !== String(p.quantity ?? 0);
                   const expanded = expandedIds.has(p.id);
@@ -479,7 +567,7 @@ export default function Parts() {
                                 </div>
 
                                 {(canEdit || canDelete) && (
-                                  <div className="flex gap-2">
+                                  <div className="flex flex-wrap gap-2">
                                     {canEdit && (
                                       <button
                                         type="button"
@@ -487,6 +575,16 @@ export default function Parts() {
                                         className="btn-secondary"
                                       >
                                         <Pencil size={14} /> Redaguoti
+                                      </button>
+                                    )}
+                                    {canDelete && (
+                                      <button
+                                        type="button"
+                                        onClick={() => setWriteoffPart(p)}
+                                        disabled={(p.quantity ?? 0) <= 0}
+                                        className="btn-secondary border-signal-amber/30 text-signal-amber hover:bg-signal-amber/10"
+                                      >
+                                        <PackageMinus size={14} /> Nurašyti
                                       </button>
                                     )}
                                     {canDelete && (
@@ -504,6 +602,33 @@ export default function Parts() {
                                     )}
                                   </div>
                                 )}
+
+                                {canDelete && (
+                                  <div>
+                                    <p className="mb-1 text-xs font-semibold text-ink-600/70">Nurašymų istorija</p>
+                                    {loadingHistoryId === p.id ? (
+                                      <Loader2 size={14} className="animate-spin text-ink-600/40" />
+                                    ) : (writeoffHistory[p.id] || []).length === 0 ? (
+                                      <p className="text-sm text-ink-600/50">Nurašymų nebuvo.</p>
+                                    ) : (
+                                      <ul className="space-y-1">
+                                        {writeoffHistory[p.id].map((w) => (
+                                          <li key={w.id} className="text-xs text-ink-600/70">
+                                            <span className="font-semibold text-ink-800">-{w.quantity} vnt.</span>
+                                            {" · "}
+                                            {new Date(w.created_at).toLocaleDateString("lt-LT")}
+                                            {" · "}
+                                            {WRITEOFF_REASONS.find((r) => r.value === w.reason_type)?.label || w.reason_type}
+                                            {w.reason_type === "parduota" && w.price != null && ` (${w.price} €)`}
+                                            {w.reason_type === "remontui" && w.rma && ` (RMA: ${w.rma})`}
+                                            {w.reason_type === "kita" && w.reason && ` (${w.reason})`}
+                                            {w.profiles?.username && ` · ${w.profiles.username}`}
+                                          </li>
+                                        ))}
+                                      </ul>
+                                    )}
+                                  </div>
+                                )}
                               </div>
                             </div>
                           </td>
@@ -518,31 +643,29 @@ export default function Parts() {
         )}
       </div>
 
-      {!loading && filtered.length > 0 && (
+      {!loading && totalCount > 0 && (
         <div className="flex flex-wrap items-center justify-between gap-3">
           <p className="text-xs text-ink-600/50">
-            Rodoma {currentPage * pageSize + 1}–{Math.min((currentPage + 1) * pageSize, filtered.length)} iš{" "}
-            {filtered.length}
-            {filtered.length !== parts.length && ` (iš viso ${parts.length})`}
+            Rodoma {page * pageSize + 1}–{Math.min((page + 1) * pageSize, totalCount)} iš {totalCount}
           </p>
           {totalPages > 1 && (
             <div className="flex items-center gap-2">
               <button
                 type="button"
                 onClick={() => setPage((p) => Math.max(0, p - 1))}
-                disabled={currentPage === 0}
+                disabled={page === 0}
                 className="btn-secondary px-2.5 py-1.5"
                 aria-label="Ankstesnis puslapis"
               >
                 <ChevronLeft size={14} />
               </button>
               <span className="text-xs font-medium text-ink-600/70">
-                {currentPage + 1} / {totalPages}
+                {page + 1} / {totalPages}
               </span>
               <button
                 type="button"
                 onClick={() => setPage((p) => Math.min(totalPages - 1, p + 1))}
-                disabled={currentPage >= totalPages - 1}
+                disabled={page >= totalPages - 1}
                 className="btn-secondary px-2.5 py-1.5"
                 aria-label="Kitas puslapis"
               >
@@ -571,6 +694,177 @@ export default function Parts() {
           onSave={handleCreatePart}
         />
       )}
+
+      {writeoffPart && (
+        <WriteoffModal
+          part={writeoffPart}
+          onClose={() => setWriteoffPart(null)}
+          onSave={(form) => handleWriteoff(writeoffPart, form)}
+        />
+      )}
+    </div>
+  );
+}
+
+const WRITEOFF_REASONS = [
+  { value: "parduota", label: "Parduota" },
+  { value: "remontui", label: "Panaudota remontui" },
+  { value: "kita", label: "Kita" }
+];
+
+function WriteoffModal({ part, onClose, onSave }) {
+  const [quantity, setQuantity] = useState("1");
+  const [reasonType, setReasonType] = useState("");
+  const [price, setPrice] = useState("");
+  const [rma, setRma] = useState("");
+  const [reason, setReason] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  async function submit(e) {
+    e.preventDefault();
+    const value = Math.round(Number(quantity));
+    if (!value || value <= 0) {
+      setError("Įveskite teigiamą kiekį.");
+      return;
+    }
+    if (value > (part.quantity ?? 0)) {
+      setError(`Negalima nurašyti daugiau nei turima likutyje (${part.quantity ?? 0}).`);
+      return;
+    }
+    if (!reasonType) {
+      setError("Pasirinkite priežastį.");
+      return;
+    }
+    if (reasonType === "parduota" && (!price || Number(price) <= 0)) {
+      setError("Įveskite kainą.");
+      return;
+    }
+    if (reasonType === "remontui" && !rma.trim()) {
+      setError("Įveskite RMA numerį.");
+      return;
+    }
+    if (reasonType === "kita" && !reason.trim()) {
+      setError("Įveskite priežastį.");
+      return;
+    }
+
+    setSaving(true);
+    setError("");
+    const errorMessage = await onSave({
+      quantity: value,
+      reasonType,
+      price: reasonType === "parduota" ? Number(price) : null,
+      rma: reasonType === "remontui" ? rma.trim() : null,
+      reason: reasonType === "kita" ? reason.trim() : null
+    });
+    setSaving(false);
+    if (errorMessage) setError(errorMessage);
+  }
+
+  return (
+    <div className="fixed inset-0 z-30 flex items-end justify-center bg-ink-950/50 p-0 sm:items-center sm:p-4">
+      <form
+        onSubmit={submit}
+        className="w-full max-w-md rounded-t-2xl bg-white p-5 shadow-panel sm:rounded-2xl"
+      >
+        <div className="mb-4 flex items-center justify-between">
+          <h2 className="text-base font-bold text-ink-900">Nurašyti priedą</h2>
+          <button type="button" onClick={onClose} className="rounded-lg p-1.5 hover:bg-ink-900/5">
+            <X size={18} />
+          </button>
+        </div>
+
+        <p className="mb-3 text-sm text-ink-600/70">
+          {part.name || part.part_code} — turima likutyje: <span className="font-semibold text-ink-800">{part.quantity ?? 0}</span>
+        </p>
+
+        <div className="space-y-3">
+          <div>
+            <label className="mb-1 block text-xs font-semibold text-ink-600/70">Nurašomas kiekis</label>
+            <input
+              type="number"
+              min={1}
+              max={part.quantity ?? 0}
+              value={quantity}
+              onChange={(e) => setQuantity(e.target.value)}
+              className="input-field"
+              autoFocus
+              required
+            />
+          </div>
+          <div>
+            <label className="mb-1 block text-xs font-semibold text-ink-600/70">Priežastis</label>
+            <select
+              value={reasonType}
+              onChange={(e) => setReasonType(e.target.value)}
+              className="input-field"
+              required
+            >
+              <option value="" disabled>Pasirinkite…</option>
+              {WRITEOFF_REASONS.map((r) => (
+                <option key={r.value} value={r.value}>{r.label}</option>
+              ))}
+            </select>
+          </div>
+
+          {reasonType === "parduota" && (
+            <div>
+              <label className="mb-1 block text-xs font-semibold text-ink-600/70">Kaina (€)</label>
+              <input
+                type="number"
+                min={0}
+                step="0.01"
+                value={price}
+                onChange={(e) => setPrice(e.target.value)}
+                className="input-field"
+                required
+              />
+            </div>
+          )}
+
+          {reasonType === "remontui" && (
+            <div>
+              <label className="mb-1 block text-xs font-semibold text-ink-600/70">RMA numeris</label>
+              <input
+                value={rma}
+                onChange={(e) => setRma(e.target.value)}
+                className="input-field"
+                required
+              />
+            </div>
+          )}
+
+          {reasonType === "kita" && (
+            <div>
+              <label className="mb-1 block text-xs font-semibold text-ink-600/70">Priežastis</label>
+              <textarea
+                value={reason}
+                onChange={(e) => setReason(e.target.value)}
+                rows={2}
+                className="input-field resize-none"
+                required
+              />
+            </div>
+          )}
+        </div>
+
+        {error && (
+          <p className="mt-3 flex items-center gap-1.5 text-sm font-medium text-signal-red">
+            <AlertCircle size={16} className="shrink-0" /> {error}
+          </p>
+        )}
+
+        <div className="mt-5 flex justify-end gap-2">
+          <button type="button" onClick={onClose} className="btn-secondary">
+            Atšaukti
+          </button>
+          <button type="submit" disabled={saving} className="btn-primary">
+            {saving && <Loader2 size={15} className="animate-spin" />}
+            Nurašyti
+          </button>
+        </div>
+      </form>
     </div>
   );
 }

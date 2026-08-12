@@ -1,14 +1,15 @@
-import { Navigate, useLocation } from "react-router-dom";
 import { Loader2, ShieldAlert } from "lucide-react";
 import { useAuth } from "../lib/AuthProvider";
+import InlineLoginForm from "./InlineLoginForm";
 
 // Apsaugo maršrutą — reikalauja prisijungimo, o jei nurodyta "permission",
 // dar ir konkrečios teisės (view/edit/delete/import/admin). Kadangi
 // "admin" nėra galiojama user_permissions reikšmė (žr. migraciją), tikrinant
 // permission="admin" hasPermission() faktiškai patikrina tik is_admin.
+// Neprisijungusiam vartotojui rodoma prisijungimo forma tiesiog čia, tame
+// pačiame puslapyje — be peradresavimo į atskirą /login maršrutą.
 export default function RequirePermission({ permission, children }) {
   const { user, loading, hasPermission } = useAuth();
-  const location = useLocation();
 
   if (loading) {
     return (
@@ -19,7 +20,11 @@ export default function RequirePermission({ permission, children }) {
   }
 
   if (!user) {
-    return <Navigate to="/login" replace state={{ from: location.pathname }} />;
+    return (
+      <div className="mx-auto max-w-md py-10">
+        <InlineLoginForm message="Šis puslapis pasiekiamas tik prisijungusiems vartotojams." />
+      </div>
+    );
   }
 
   if (permission && !hasPermission(permission)) {
