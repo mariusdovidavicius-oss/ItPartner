@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { NavLink, Outlet } from "react-router-dom";
-import { ScanLine, PackageSearch, Boxes, ChevronDown, Wrench, PackageMinus, Users, LogOut } from "lucide-react";
+import { ScanLine, PackageSearch, Boxes, ChevronDown, Wrench, PackageMinus, BarChart3, Users, LogOut } from "lucide-react";
 import { useAuth } from "../lib/AuthProvider";
 import InlineLoginForm from "./InlineLoginForm";
 
@@ -131,6 +131,7 @@ export default function Layout() {
   const navGroups = useMemo(() => {
     const extra = [];
     if (canSeeWriteoffs) extra.push({ to: "/priedai/nurasymai", label: "Nurašymai", icon: PackageMinus });
+    if (canSeeWriteoffs) extra.push({ to: "/priedai/statistika", label: "Statistika", icon: BarChart3 });
     if (isAdmin) extra.push({ to: "/priedai/vartotojai", label: "Vartotojai", icon: Users });
     if (extra.length === 0) return BASE_NAV_GROUPS;
     return BASE_NAV_GROUPS.map((g) =>

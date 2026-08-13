@@ -13,15 +13,11 @@ function escapeLike(str) {
 }
 
 const PAGE_SIZE_OPTIONS = [10, 25, 50, 100];
-const LOW_STOCK_THRESHOLD = 3; // <= šitiek vienetų — žymima kaip mažas likutis
+// Numatytasis mažo likučio slenkstis, kai priedas neturi savo individualaus
+// "min_quantity" — turi atitikti DB pusės "stock_level" generuojamo
+// stulpelio fallback reikšmę (žr. migrate_parts_min_quantity.sql).
+const DEFAULT_LOW_STOCK_THRESHOLD = 3;
 const SEARCH_DEBOUNCE_MS = 300;
-
-function stockLevel(quantity) {
-  const qty = Number(quantity) || 0;
-  if (qty <= 0) return "out";
-  if (qty <= LOW_STOCK_THRESHOLD) return "low";
-  return "ok";
-}
 
 export default function Parts() {
   const { user, hasPermission } = useAuth();
@@ -45,6 +41,7 @@ export default function Parts() {
   const [writeoffPart, setWriteoffPart] = useState(null);
   const [writeoffHistory, setWriteoffHistory] = useState({}); // part id -> nurašymų sąrašas
   const [loadingHistoryId, setLoadingHistoryId] = useState(null);
+  const [undoingId, setUndoingId] = useState(null);
   const [exporting, setExporting] = useState(false);
   const [locationFilter, setLocationFilter] = useState(""); // "" = visos lokacijos
   const [stockFilter, setStockFilter] = useState("all"); // all | low | out
@@ -63,7 +60,7 @@ export default function Parts() {
   // įrašai), kad paieška/filtrai neišsiskirtų tarp dviejų vietų.
   function buildQuery(opts = {}) {
     let query = supabase.from("parts").select(
-      "id, location, main_model, part_code, name, quantity, online_store, compatible_models, notes",
+      "id, location, main_model, part_code, name, quantity, min_quantity, stock_level, online_store, compatible_models, notes",
       opts.count ? { count: opts.count } : undefined
     );
 
@@ -76,8 +73,8 @@ export default function Parts() {
     });
 
     if (locationFilter !== "") query = query.eq("location", Number(locationFilter));
-    if (stockFilter === "out") query = query.lte("quantity", 0);
-    if (stockFilter === "low") query = query.gt("quantity", 0).lte("quantity", LOW_STOCK_THRESHOLD);
+    if (stockFilter === "out") query = query.eq("stock_level", "out");
+    if (stockFilter === "low") query = query.eq("stock_level", "low");
 
     return query.order("location", { ascending: true });
   }
@@ -181,11 +178,23 @@ export default function Parts() {
     setLoadingHistoryId(partId);
     const { data } = await supabase
       .from("parts_writeoffs")
-      .select("id, quantity, reason_type, price, rma, reason, created_at, profiles(username)")
+      .select("id, quantity, reason_type, price, rma, reason, created_at, undone_at, profiles!user_id(username)")
       .eq("part_id", partId)
       .order("created_at", { ascending: false });
     setWriteoffHistory((prev) => ({ ...prev, [partId]: data || [] }));
     setLoadingHistoryId(null);
+  }
+
+  async function handleUndoWriteoff(writeoff, partId) {
+    if (!confirm(`Ar tikrai norite atšaukti šį nurašymą? ${writeoff.quantity} vnt. bus grąžinta į likutį.`)) return;
+    setUndoingId(writeoff.id);
+    const { error } = await supabase.rpc("undo_writeoff", { p_writeoff_id: writeoff.id });
+    setUndoingId(null);
+    if (error) {
+      setActionError(`Nepavyko atšaukti nurašymo: ${error.message}`);
+      return;
+    }
+    loadWriteoffHistory(partId);
   }
 
   // Grąžina klaidos tekstą, jei nepavyko — WriteoffModal tada rodo ją
@@ -248,6 +257,7 @@ export default function Parts() {
         name: form.name.trim() || null,
         part_code: form.part_code.trim(),
         location: Math.round(Number(form.location)) || 0,
+        min_quantity: form.min_quantity === "" ? null : Math.max(0, Math.round(Number(form.min_quantity)) || 0),
         compatible_models: form.compatible_models.trim() || null,
         online_store: form.online_store
       })
@@ -263,6 +273,7 @@ export default function Parts() {
       part_code: form.part_code.trim(),
       location: Math.round(Number(form.location)) || 0,
       quantity: Math.max(0, Math.round(Number(form.quantity)) || 0),
+      min_quantity: form.min_quantity === "" ? null : Math.max(0, Math.round(Number(form.min_quantity)) || 0),
       compatible_models: form.compatible_models.trim() || null,
       online_store: form.online_store
     });
@@ -380,7 +391,7 @@ export default function Parts() {
             className="input-field w-auto py-1.5 text-sm"
           >
             <option value="all">Visi</option>
-            <option value="low">Mažas arba baigęsis (≤ {LOW_STOCK_THRESHOLD})</option>
+            <option value="low">Mažas likutis</option>
             <option value="out">Tik baigęsis (0)</option>
           </select>
         </label>
@@ -429,7 +440,7 @@ export default function Parts() {
                   const changed = draft !== String(p.quantity ?? 0);
                   const expanded = expandedIds.has(p.id);
                   const notesDraft = notesDrafts[p.id] ?? "";
-                  const level = stockLevel(p.quantity);
+                  const level = p.stock_level || "ok";
                   const rowTone =
                     level === "out"
                       ? "bg-signal-red/[0.04] hover:bg-signal-red/[0.07]"
@@ -535,6 +546,15 @@ export default function Parts() {
                                 </div>
 
                                 <div>
+                                  <p className="mb-1 text-xs font-semibold text-ink-600/70">Min. likutis</p>
+                                  <p className="text-sm text-ink-800">
+                                    {p.min_quantity != null
+                                      ? p.min_quantity
+                                      : `${DEFAULT_LOW_STOCK_THRESHOLD} (numatyta)`}
+                                  </p>
+                                </div>
+
+                                <div>
                                   <p className="mb-1 text-xs font-semibold text-ink-600/70">Pastaba</p>
                                   {canEdit ? (
                                     <div className="flex items-start gap-2">
@@ -613,16 +633,34 @@ export default function Parts() {
                                     ) : (
                                       <ul className="space-y-1">
                                         {writeoffHistory[p.id].map((w) => (
-                                          <li key={w.id} className="text-xs text-ink-600/70">
-                                            <span className="font-semibold text-ink-800">-{w.quantity} vnt.</span>
-                                            {" · "}
-                                            {new Date(w.created_at).toLocaleDateString("lt-LT")}
-                                            {" · "}
-                                            {WRITEOFF_REASONS.find((r) => r.value === w.reason_type)?.label || w.reason_type}
-                                            {w.reason_type === "parduota" && w.price != null && ` (${w.price} €)`}
-                                            {w.reason_type === "remontui" && w.rma && ` (RMA: ${w.rma})`}
-                                            {w.reason_type === "kita" && w.reason && ` (${w.reason})`}
-                                            {w.profiles?.username && ` · ${w.profiles.username}`}
+                                          <li
+                                            key={w.id}
+                                            className={`flex flex-wrap items-center justify-between gap-x-2 gap-y-1 text-xs ${
+                                              w.undone_at ? "text-ink-600/40 line-through" : "text-ink-600/70"
+                                            }`}
+                                          >
+                                            <span>
+                                              <span className="font-semibold text-ink-800">-{w.quantity} vnt.</span>
+                                              {" · "}
+                                              {new Date(w.created_at).toLocaleDateString("lt-LT")}
+                                              {" · "}
+                                              {WRITEOFF_REASONS.find((r) => r.value === w.reason_type)?.label || w.reason_type}
+                                              {w.reason_type === "parduota" && w.price != null && ` (${w.price} €)`}
+                                              {w.reason_type === "remontui" && w.rma && ` (RMA: ${w.rma})`}
+                                              {w.reason_type === "kita" && w.reason && ` (${w.reason})`}
+                                              {w.profiles?.username && ` · ${w.profiles.username}`}
+                                              {w.undone_at && " · atšaukta"}
+                                            </span>
+                                            {!w.undone_at && (
+                                              <button
+                                                type="button"
+                                                onClick={() => handleUndoWriteoff(w, p.id)}
+                                                disabled={undoingId === w.id}
+                                                className="shrink-0 font-medium text-signal-orange underline decoration-dotted hover:text-signal-orange/80 disabled:opacity-50"
+                                              >
+                                                {undoingId === w.id ? "Atšaukiama…" : "Atšaukti"}
+                                              </button>
+                                            )}
                                           </li>
                                         ))}
                                       </ul>
@@ -876,6 +914,7 @@ function PartFormModal({ title, initial, onClose, onSave, showQuantity = false }
     part_code: initial?.part_code || "",
     location: initial?.location ?? 0,
     quantity: initial?.quantity ?? 0,
+    min_quantity: initial?.min_quantity ?? "",
     compatible_models: initial?.compatible_models || "",
     online_store: !!initial?.online_store
   });
@@ -956,6 +995,17 @@ function PartFormModal({ title, initial, onClose, onSave, showQuantity = false }
               />
             </div>
           )}
+          <div>
+            <label className="mb-1 block text-xs font-semibold text-ink-600/70">Min. likutis</label>
+            <input
+              type="number"
+              min={0}
+              value={form.min_quantity}
+              onChange={(e) => setForm({ ...form, min_quantity: e.target.value })}
+              placeholder={`Numatyta — ${DEFAULT_LOW_STOCK_THRESHOLD}`}
+              className="input-field"
+            />
+          </div>
           <div>
             <label className="mb-1 block text-xs font-semibold text-ink-600/70">Suderinami modeliai</label>
             <textarea

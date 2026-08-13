@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Search, Loader2, ChevronLeft, ChevronRight, PackageMinus, Download } from "lucide-react";
+import { Search, Loader2, ChevronLeft, ChevronRight, PackageMinus, Download, AlertCircle, X } from "lucide-react";
 import { supabase } from "../lib/supabaseClient";
 import { exportPartsWriteoffsToExcel } from "../lib/exportExcel";
 
@@ -33,6 +33,8 @@ export default function PartsWriteoffs() {
   const [pageSize, setPageSize] = useState(PAGE_SIZE_OPTIONS[0]);
   const [page, setPage] = useState(0);
   const [exporting, setExporting] = useState(false);
+  const [undoingId, setUndoingId] = useState(null);
+  const [actionError, setActionError] = useState("");
 
   useEffect(() => {
     const t = setTimeout(() => setDebouncedSearch(search), SEARCH_DEBOUNCE_MS);
@@ -48,7 +50,7 @@ export default function PartsWriteoffs() {
   // ne-adminui. Dėl to paieška apima tik priedo pavadinimą/kodą, ne vartotoją.
   function buildQuery(opts = {}) {
     let query = supabase.from("parts_writeoffs").select(
-      "id, quantity, reason_type, price, rma, reason, created_at, parts!inner(name, part_code, location), profiles(username)",
+      "id, quantity, reason_type, price, rma, reason, created_at, undone_at, parts!inner(name, part_code, location), profiles!user_id(username)",
       opts.count ? { count: opts.count } : undefined
     );
 
@@ -110,6 +112,18 @@ export default function PartsWriteoffs() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [totalCount, pageSize]);
 
+  async function handleUndo(writeoff) {
+    if (!confirm(`Ar tikrai norite atšaukti šį nurašymą? ${writeoff.quantity} vnt. bus grąžinta į likutį.`)) return;
+    setUndoingId(writeoff.id);
+    const { error } = await supabase.rpc("undo_writeoff", { p_writeoff_id: writeoff.id });
+    setUndoingId(null);
+    if (error) {
+      setActionError(`Nepavyko atšaukti nurašymo: ${error.message}`);
+      return;
+    }
+    load();
+  }
+
   async function handleExport() {
     setExporting(true);
     const { data } = await buildQuery();
@@ -123,6 +137,21 @@ export default function PartsWriteoffs() {
         <h1 className="text-xl font-bold text-ink-900 lg:text-2xl">Nurašymai</h1>
         <p className="mt-1 text-sm text-ink-600/70">Visų nurašytų priedų istorija.</p>
       </div>
+
+      {actionError && (
+        <div className="flex items-start gap-2 rounded-xl border border-signal-red/20 bg-signal-red/5 p-3.5 text-sm text-signal-red">
+          <AlertCircle size={16} className="mt-0.5 shrink-0" />
+          <span className="flex-1">{actionError}</span>
+          <button
+            type="button"
+            onClick={() => setActionError("")}
+            className="shrink-0 rounded-lg p-0.5 hover:bg-signal-red/10"
+            aria-label="Uždaryti pranešimą"
+          >
+            <X size={14} />
+          </button>
+        </div>
+      )}
 
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
         <div className="relative flex-1">
@@ -197,11 +226,12 @@ export default function PartsWriteoffs() {
                   <th className="px-3 py-2.5 font-semibold">Priežastis</th>
                   <th className="px-3 py-2.5 font-semibold">Detalė</th>
                   <th className="px-3 py-2.5 font-semibold">Kas</th>
+                  <th className="px-3 py-2.5 font-semibold">Būsena</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-ink-900/5">
                 {writeoffs.map((w) => (
-                  <tr key={w.id} className="hover:bg-ink-900/[0.015]">
+                  <tr key={w.id} className={`hover:bg-ink-900/[0.015] ${w.undone_at ? "text-ink-600/40 line-through" : ""}`}>
                     <td className="px-3 py-2.5 text-ink-600/70">{formatDate(w.created_at)}</td>
                     <td className="max-w-[180px] truncate px-3 py-2.5 text-ink-800">{w.parts?.name || "—"}</td>
                     <td className="max-w-[110px] truncate px-3 py-2.5 font-mono text-ink-900">{w.parts?.part_code || "—"}</td>
@@ -209,6 +239,20 @@ export default function PartsWriteoffs() {
                     <td className="px-3 py-2.5 text-ink-800">{REASON_LABELS[w.reason_type] || w.reason_type}</td>
                     <td className="max-w-[160px] truncate px-3 py-2.5 text-ink-600/70">{writeoffDetail(w)}</td>
                     <td className="px-3 py-2.5 text-ink-600/70">{w.profiles?.username || "—"}</td>
+                    <td className="px-3 py-2.5 no-underline">
+                      {w.undone_at ? (
+                        <span className="text-xs text-ink-600/50">Atšaukta</span>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => handleUndo(w)}
+                          disabled={undoingId === w.id}
+                          className="text-xs font-medium text-signal-orange underline decoration-dotted hover:text-signal-orange/80 disabled:opacity-50"
+                        >
+                          {undoingId === w.id ? "Atšaukiama…" : "Atšaukti"}
+                        </button>
+                      )}
+                    </td>
                   </tr>
                 ))}
               </tbody>

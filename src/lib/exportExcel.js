@@ -157,14 +157,14 @@ export async function exportPartsWriteoffsToExcel(writeoffsList, filename) {
   const sheet = workbook.addWorksheet("Nurašymai");
   sheet.columns = [
     { width: 14 }, { width: 28 }, { width: 16 }, { width: 8 },
-    { width: 18 }, { width: 24 }, { width: 16 }
+    { width: 18 }, { width: 24 }, { width: 16 }, { width: 12 }
   ];
 
   const thin = { style: "thin" };
   const fullBorder = { top: thin, left: thin, bottom: thin, right: thin };
 
   const headerRow = sheet.addRow([
-    "Data", "Priedas", "Detalės kodas", "Kiekis", "Priežastis", "Detalė", "Kas"
+    "Data", "Priedas", "Detalės kodas", "Kiekis", "Priežastis", "Detalė", "Kas", "Būsena"
   ]);
   headerRow.eachCell({ includeEmpty: true }, (cell) => {
     cell.font = { bold: true };
@@ -183,7 +183,8 @@ export async function exportPartsWriteoffsToExcel(writeoffsList, filename) {
       w.quantity ?? 0,
       WRITEOFF_REASON_LABELS[w.reason_type] || w.reason_type,
       detail,
-      w.profiles?.username || ""
+      w.profiles?.username || "",
+      w.undone_at ? "Atšaukta" : "Aktyvus"
     ]);
     row.eachCell({ includeEmpty: true }, (cell) => {
       cell.border = fullBorder;

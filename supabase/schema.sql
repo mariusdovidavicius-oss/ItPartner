@@ -770,11 +770,24 @@ create table if not exists public.parts (
   part_code          text not null,                    -- "Detalės Kodas" — text, nes formatas nevienodas (skaičius arba "352083/ZU21")
   name               text,                             -- "Pavadinimas"
   quantity           integer not null default 0,
+  min_quantity       integer,                          -- individualus mažo likučio slenkstis; NULL = naudojama numatytoji reikšmė (3, žr. stock_level žemiau)
   online_store       boolean not null default false,   -- "El. parduotuvė" TAIP/NE
   compatible_models  text,                              -- "Suderinami Modeliai", žalias tekstas
   notes              text,                              -- laisva pastaba
   created_at         timestamptz not null default now(),
-  updated_at         timestamptz not null default now()
+  updated_at         timestamptz not null default now(),
+  constraint parts_min_quantity_check check (min_quantity is null or min_quantity >= 0),
+  -- Generuojamas (stored) stulpelis — leidžia /priedai likučio filtrui
+  -- filtruoti per PostgREST paprastu .eq("stock_level", …), nes PostgREST
+  -- negali filtruoti lygindamas du tos pačios eilutės stulpelius (quantity
+  -- vs min_quantity) tiesiogiai užklausoje.
+  stock_level        text generated always as (
+    case
+      when quantity <= 0 then 'out'
+      when quantity <= coalesce(min_quantity, 3) then 'low'
+      else 'ok'
+    end
+  ) stored
 );
 
 comment on table public.parts is 'Priedų (atsarginių dalių) sandėlio apskaita, importuojama iš Excel.';
@@ -782,6 +795,7 @@ comment on table public.parts is 'Priedų (atsarginių dalių) sandėlio apskait
 create index if not exists parts_part_code_idx on public.parts (part_code);
 create index if not exists parts_name_idx on public.parts (name);
 create index if not exists parts_location_idx on public.parts (location);
+create index if not exists parts_stock_level_idx on public.parts (stock_level);
 
 drop trigger if exists parts_set_updated_at on public.parts;
 create trigger parts_set_updated_at
@@ -976,7 +990,11 @@ create table if not exists public.parts_writeoffs (
   price       numeric(10, 2),
   rma         text,
   reason      text,
-  created_at  timestamptz not null default now()
+  created_at  timestamptz not null default now(),
+  -- Atšaukimas (žr. undo_writeoff() žemiau) — įrašas NETRINAMAS, tik
+  -- pažymimas, kad liktų audito pėdsakas.
+  undone_at   timestamptz,
+  undone_by   uuid references public.profiles (id) on delete set null
 );
 
 comment on table public.parts_writeoffs is 'Priedų nurašymų (parduota/remontui/kita) audito istorija.';
@@ -1054,5 +1072,48 @@ end;
 $$;
 
 grant execute on function public.writeoff_part(uuid, integer, text, numeric, text, text) to authenticated;
+
+-- Nurašymo atšaukimas — grąžina kiekį atgal į parts.quantity ir pažymi
+-- įrašą kaip atšauktą (netrina, kad liktų audito pėdsakas). Galima atšaukti
+-- tik kartą; reikalauja tos pačios "delete" teisės, kaip ir pats
+-- nurašymas. Tiesioginės update politikos parts_writeoffs lentelei nėra —
+-- atšaukti galima tik per šią SECURITY DEFINER funkciją.
+create or replace function public.undo_writeoff(p_writeoff_id uuid)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_part_id  uuid;
+  v_quantity integer;
+  v_undone   timestamptz;
+begin
+  if not public.has_permission(auth.uid(), 'delete') then
+    raise exception 'Neturite teisės atšaukti nurašymo.';
+  end if;
+
+  select part_id, quantity, undone_at
+    into v_part_id, v_quantity, v_undone
+    from public.parts_writeoffs
+    where id = p_writeoff_id
+    for update;
+
+  if v_part_id is null then
+    raise exception 'Nurašymas nerastas.';
+  end if;
+  if v_undone is not null then
+    raise exception 'Šis nurašymas jau atšauktas.';
+  end if;
+
+  update public.parts set quantity = quantity + v_quantity where id = v_part_id;
+
+  update public.parts_writeoffs
+    set undone_at = now(), undone_by = auth.uid()
+    where id = p_writeoff_id;
+end;
+$$;
+
+grant execute on function public.undo_writeoff(uuid) to authenticated;
 
 alter publication supabase_realtime add table public.parts_writeoffs;

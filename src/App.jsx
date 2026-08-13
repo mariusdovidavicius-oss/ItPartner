@@ -9,6 +9,7 @@ import ShipmentDetail from "./pages/ShipmentDetail";
 import Parts from "./pages/Parts";
 import PartsImport from "./pages/PartsImport";
 import PartsWriteoffs from "./pages/PartsWriteoffs";
+import PartsStats from "./pages/PartsStats";
 import PartsUsers from "./pages/PartsUsers";
 import CatalogImport from "./pages/CatalogImport";
 import AdminReset from "./pages/AdminReset";
@@ -27,6 +28,7 @@ export default function App() {
         {/* Prisijungimo forma rodoma tiesiog šiuose puslapiuose (RequirePermission), ne atskirame /login maršrute */}
         <Route path="/priedai/importas" element={<RequirePermission permission="import"><PartsImport /></RequirePermission>} />
         <Route path="/priedai/nurasymai" element={<RequirePermission permission="delete"><PartsWriteoffs /></RequirePermission>} />
+        <Route path="/priedai/statistika" element={<RequirePermission permission="delete"><PartsStats /></RequirePermission>} />
         <Route path="/priedai/vartotojai" element={<RequirePermission permission="admin"><PartsUsers /></RequirePermission>} />
         {/* Administraciniai puslapiai — tik tiesioginiu adresu, be nuorodos navigacijoje */}
         <Route path="/katalogas" element={<CatalogImport />} />
