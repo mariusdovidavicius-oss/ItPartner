@@ -12,3 +12,13 @@ export const PERMISSIONS = [
 ];
 
 export const PERMISSION_KEYS = PERMISSIONS.map((p) => p.key);
+
+// Paletžų/siuntų modulio teisės — atskiros nuo aukščiau esančių priedų
+// teisių (žr. supabase/migrate_add_pallet_permissions.sql). Naudojamas tiek
+// frontend'e (PartsUsers.jsx, AuthProvider.jsx), tiek api/create-user.js.
+export const PALLET_PERMISSIONS = [
+  { key: "scan", label: "Skenavimas" },
+  { key: "ship", label: "Siuntos" }
+];
+
+export const PALLET_PERMISSION_KEYS = PALLET_PERMISSIONS.map((p) => p.key);

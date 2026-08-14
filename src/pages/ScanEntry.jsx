@@ -6,6 +6,7 @@ import {
 import { supabase } from "../lib/supabaseClient";
 import { computeDestination, prettifyDestination, UNCLASSIFIED } from "../lib/destination";
 import { printPalletLabel } from "../lib/printLabel";
+import { useAuth } from "../lib/AuthProvider";
 
 // Leistini gamintojo -> tipo deriniai rankiniam naujo įrankio įvedimui.
 // Reikšmės TIKSLIAI atitinka jau naudojamas catalog.manufacturer/item_type
@@ -42,6 +43,8 @@ function escapeLike(str) {
 }
 
 export default function ScanEntry() {
+  const { hasPalletPermission } = useAuth();
+  const canScan = hasPalletPermission("scan");
   const [ian, setIan] = useState("");
   const [name, setName] = useState("");
   const [category, setCategory] = useState("");
@@ -502,7 +505,15 @@ export default function ScanEntry() {
         </p>
       </div>
 
+      {!canScan && (
+        <div className="rounded-xl border border-ink-700/10 bg-ink-900/[0.02] px-3.5 py-2.5 text-sm text-ink-600/70">
+          Peržiūros režimas — bet kas gali matyti atviras paletes. Norėdami registruoti/redaguoti prietaisus,
+          prisijunkite (viršuje) su skenavimo teise.
+        </div>
+      )}
+
       {/* Skenerio / paieškos forma */}
+      {canScan && (
       <form
         onSubmit={handleSubmit}
         className="rounded-2xl bg-ink-950 p-5 shadow-panel lg:p-6"
@@ -742,6 +753,7 @@ export default function ScanEntry() {
           )}
         </div>
       </form>
+      )}
 
       {/* Dabartinės atviros paletės */}
       <div className="space-y-2">
@@ -770,6 +782,7 @@ export default function ScanEntry() {
                         Pildoma &middot; {p.qty} vnt.
                       </p>
                     </div>
+                    {canScan && (
                     <div className="flex shrink-0 flex-col items-stretch gap-1.5 sm:flex-row sm:items-center">
                       <button
                         onClick={() => handleClose(p)}
@@ -794,8 +807,10 @@ export default function ScanEntry() {
                         </button>
                       )}
                     </div>
+                    )}
                   </div>
 
+                  {canScan && (
                   <div className="flex items-center gap-2">
                     <input
                       value={palletNotesDrafts[p.id] ?? ""}
@@ -820,6 +835,7 @@ export default function ScanEntry() {
                         : <Save size={14} />}
                     </button>
                   </div>
+                  )}
 
                   <button
                     type="button"
@@ -847,23 +863,27 @@ export default function ScanEntry() {
                               </div>
                               <div className="flex shrink-0 items-center gap-1.5">
                                 <span className="text-xs font-medium text-ink-600/50">{item.quantity || 1} vnt.</span>
-                                <button
-                                  onClick={() => setEditingItem(item)}
-                                  className="rounded-lg p-1.5 text-ink-600/60 hover:bg-ink-900/5 hover:text-ink-900"
-                                  aria-label="Redaguoti"
-                                >
-                                  <Pencil size={14} />
-                                </button>
-                                <button
-                                  onClick={() => handleDeleteItem(item)}
-                                  disabled={deletingId === item.id}
-                                  className="rounded-lg p-1.5 text-ink-600/60 hover:bg-signal-red/10 hover:text-signal-red"
-                                  aria-label="Trinti"
-                                >
-                                  {deletingId === item.id
-                                    ? <Loader2 size={14} className="animate-spin" />
-                                    : <Trash2 size={14} />}
-                                </button>
+                                {canScan && (
+                                  <>
+                                    <button
+                                      onClick={() => setEditingItem(item)}
+                                      className="rounded-lg p-1.5 text-ink-600/60 hover:bg-ink-900/5 hover:text-ink-900"
+                                      aria-label="Redaguoti"
+                                    >
+                                      <Pencil size={14} />
+                                    </button>
+                                    <button
+                                      onClick={() => handleDeleteItem(item)}
+                                      disabled={deletingId === item.id}
+                                      className="rounded-lg p-1.5 text-ink-600/60 hover:bg-signal-red/10 hover:text-signal-red"
+                                      aria-label="Trinti"
+                                    >
+                                      {deletingId === item.id
+                                        ? <Loader2 size={14} className="animate-spin" />
+                                        : <Trash2 size={14} />}
+                                    </button>
+                                  </>
+                                )}
                               </div>
                             </div>
                           ))}

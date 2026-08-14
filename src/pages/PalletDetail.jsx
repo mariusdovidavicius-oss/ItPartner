@@ -4,10 +4,13 @@ import { ArrowLeft, Loader2, X, Save, CheckCircle2, AlertCircle, Pencil, Plus } 
 import { supabase } from "../lib/supabaseClient";
 import StatusBadge from "../components/StatusBadge";
 import { PALLET_STATUSES, ITEM_STATUSES } from "../lib/constants";
+import { useAuth } from "../lib/AuthProvider";
 
 export default function PalletDetail() {
   const { id } = useParams();
   const navigate = useNavigate();
+  const { hasPalletPermission } = useAuth();
+  const canScan = hasPalletPermission("scan");
   const [pallet, setPallet] = useState(null);
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -199,18 +202,28 @@ export default function PalletDetail() {
             {totalQty} vnt. ({items.length} modelių) paletėje
           </p>
         </div>
-        <select
-          value={pallet.status}
-          onChange={(e) => handleStatusChange(e.target.value)}
-          className="input-field w-48"
-        >
-          {PALLET_STATUSES.map((s) => (
-            <option key={s.value} value={s.value}>
-              {s.label}
-            </option>
-          ))}
-        </select>
+        {canScan ? (
+          <select
+            value={pallet.status}
+            onChange={(e) => handleStatusChange(e.target.value)}
+            className="input-field w-48"
+          >
+            {PALLET_STATUSES.map((s) => (
+              <option key={s.value} value={s.value}>
+                {s.label}
+              </option>
+            ))}
+          </select>
+        ) : (
+          <StatusBadge list={PALLET_STATUSES} value={pallet.status} />
+        )}
       </div>
+
+      {!canScan && (
+        <div className="rounded-xl border border-ink-700/10 bg-ink-900/[0.02] px-3.5 py-2.5 text-sm text-ink-600/70">
+          Peržiūros režimas. Norėdami redaguoti šią paletę, prisijunkite (viršuje) su skenavimo teise.
+        </div>
+      )}
 
       {statusError && (
         <p className="flex items-center gap-1.5 text-xs text-signal-red">
@@ -218,6 +231,7 @@ export default function PalletDetail() {
         </p>
       )}
 
+      {canScan && (
       <div className="panel space-y-2 p-4 lg:p-5">
         <label className="block text-xs font-semibold text-ink-600/70">Pastaba</label>
         <textarea
@@ -244,7 +258,16 @@ export default function PalletDetail() {
           )}
         </div>
       </div>
+      )}
 
+      {!canScan && pallet.notes && (
+        <div className="panel space-y-1 p-4 lg:p-5">
+          <p className="text-xs font-semibold text-ink-600/70">Pastaba</p>
+          <p className="text-sm text-ink-800">{pallet.notes}</p>
+        </div>
+      )}
+
+      {canScan && (
       <form onSubmit={handleAddItem} className="panel space-y-2 p-4 lg:p-5">
         <label className="block text-xs font-semibold text-ink-600/70">Pridėti prietaisą į šią paletę</label>
         <div className="flex flex-wrap gap-2">
@@ -268,6 +291,7 @@ export default function PalletDetail() {
           </p>
         )}
       </form>
+      )}
 
       {removeError && (
         <p className="flex items-center gap-1.5 text-xs text-signal-red">
@@ -288,23 +312,27 @@ export default function PalletDetail() {
               <div className="flex items-center gap-3">
                 <span className="text-xs font-medium text-ink-600/50">{item.quantity || 1} vnt.</span>
                 <StatusBadge list={ITEM_STATUSES} value={item.status} />
-                <button
-                  onClick={() => setEditingItem(item)}
-                  className="rounded-lg p-1.5 text-ink-600/60 hover:bg-ink-900/5 hover:text-ink-900"
-                  aria-label="Redaguoti"
-                >
-                  <Pencil size={15} />
-                </button>
-                <button
-                  onClick={() => handleRemove(item.id)}
-                  disabled={removingId === item.id}
-                  className="rounded-lg p-1.5 text-ink-600/50 hover:bg-signal-red/10 hover:text-signal-red disabled:opacity-40"
-                  aria-label="Pašalinti iš paletės"
-                >
-                  {removingId === item.id
-                    ? <Loader2 size={15} className="animate-spin" />
-                    : <X size={15} />}
-                </button>
+                {canScan && (
+                  <>
+                    <button
+                      onClick={() => setEditingItem(item)}
+                      className="rounded-lg p-1.5 text-ink-600/60 hover:bg-ink-900/5 hover:text-ink-900"
+                      aria-label="Redaguoti"
+                    >
+                      <Pencil size={15} />
+                    </button>
+                    <button
+                      onClick={() => handleRemove(item.id)}
+                      disabled={removingId === item.id}
+                      className="rounded-lg p-1.5 text-ink-600/50 hover:bg-signal-red/10 hover:text-signal-red disabled:opacity-40"
+                      aria-label="Pašalinti iš paletės"
+                    >
+                      {removingId === item.id
+                        ? <Loader2 size={15} className="animate-spin" />
+                        : <X size={15} />}
+                    </button>
+                  </>
+                )}
               </div>
             </div>
           ))

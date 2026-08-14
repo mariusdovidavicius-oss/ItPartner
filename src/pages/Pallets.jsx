@@ -9,10 +9,13 @@ import { prettifyDestination, splitDestination, UNCLASSIFIED } from "../lib/dest
 import { printPalletLabel, printPalletLabels } from "../lib/printLabel";
 import { exportPalletsToExcel } from "../lib/exportExcel";
 import DestinationBadge from "../components/DestinationBadge";
+import { useAuth } from "../lib/AuthProvider";
 
 export default function Pallets() {
   const location = useLocation();
   const navigate = useNavigate();
+  const { hasPalletPermission } = useAuth();
+  const canShip = hasPalletPermission("ship");
 
   // Visos "closed" + "ready" paletės (abiejų reikia, kad būtų galima
   // sudėlioti tiek "Laukia paruošimo" / "Paruošta išvežimui" sąrašus, tiek
@@ -242,10 +245,15 @@ export default function Pallets() {
     return new Date(ts).toLocaleDateString("lt-LT");
   }
 
+  // Kai "ship" teisės nėra, pažymėjimas neprieinamas — eksportuojamos visos
+  // šiuo metu matomos (filtruotos) paletės, ne pažymėtos.
   async function handleDownloadSelected() {
-    if (selectedReadyCount === 0) return;
+    if (canShip && selectedReadyCount === 0) return;
+    if (!canShip && readyPalletsFiltered.length === 0) return;
     setDownloading(true);
-    const selectedPallets = readyPalletsFiltered.filter((p) => selectedReady.has(p.id));
+    const selectedPallets = canShip
+      ? readyPalletsFiltered.filter((p) => selectedReady.has(p.id))
+      : readyPalletsFiltered;
     const suffix = activeFilter !== "all" ? `-${activeFilter}` : "";
     const result = await exportPalletsToExcel(
       selectedPallets,
@@ -358,16 +366,16 @@ export default function Pallets() {
 
   // Spausdina pažymėtų paletžų etiketes vienu metu (tinkleliu ant kiek reikia
   // A4 lapų) — rikiuojama pagal numerį, kad lape būtų nuosekli tvarka.
+  // Kai "ship" teisės nėra, pažymėjimas neprieinamas — spausdinama visos
+  // šiuo metu matomos (filtruotos) paletės, ne pažymėtos.
   function handlePrintSelectedClosed() {
-    const selected = closedPalletsFiltered
-      .filter((p) => selectedClosed.has(p.id))
+    const selected = (canShip ? closedPalletsFiltered.filter((p) => selectedClosed.has(p.id)) : closedPalletsFiltered)
       .sort((a, b) => (a.number || 0) - (b.number || 0));
     printPalletLabels(selected);
   }
 
   function handlePrintSelectedReady() {
-    const selected = readyPalletsFiltered
-      .filter((p) => selectedReady.has(p.id))
+    const selected = (canShip ? readyPalletsFiltered.filter((p) => selectedReady.has(p.id)) : readyPalletsFiltered)
       .sort((a, b) => (a.number || 0) - (b.number || 0));
     printPalletLabels(selected);
   }
@@ -415,6 +423,7 @@ export default function Pallets() {
       <div className="panel space-y-4 p-4 lg:p-5">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <h2 className="text-sm font-semibold text-ink-800">Laukia paruošimo</h2>
+          {canShip && (
           <div className="flex flex-wrap gap-2">
             <button
               type="button"
@@ -433,9 +442,10 @@ export default function Pallets() {
               <Square size={14} /> Nuimti pažymėjimą
             </button>
           </div>
+          )}
         </div>
 
-        {selectionDisabled && (
+        {canShip && selectionDisabled && (
           <p className="text-xs text-ink-600/50">
             Pasirinkite konkrečią paskirtį aukščiau, kad galėtumėte žymėti paletes — negalima maišyti
             skirtingų paskirčių vienoje siuntoje.
@@ -457,7 +467,7 @@ export default function Pallets() {
               <table className="w-full text-left text-sm">
                 <thead className="border-b border-ink-900/5 bg-ink-900/[0.02] text-xs uppercase tracking-wide text-ink-600/60">
                   <tr>
-                    <th className="w-10 px-4 py-3"></th>
+                    {canShip && <th className="w-10 px-4 py-3"></th>}
                     <th className="px-4 py-3 font-semibold">Paletė</th>
                     <th className="px-4 py-3 font-semibold">Gamintojas</th>
                     <th className="px-4 py-3 font-semibold">Tipas</th>
@@ -474,6 +484,7 @@ export default function Pallets() {
                       key={p.id}
                       className={selectedClosed.has(p.id) ? "bg-signal-orange/5" : "hover:bg-ink-900/[0.015]"}
                     >
+                      {canShip && (
                       <td className="px-4 py-3">
                         <input
                           type="checkbox"
@@ -483,6 +494,7 @@ export default function Pallets() {
                           className="h-4 w-4 rounded border-ink-700/30 text-signal-orange focus:ring-signal-orange/30"
                         />
                       </td>
+                      )}
                       <td className="px-4 py-3 font-bold text-ink-900">
                         {palletLabel(p)}
                       </td>
@@ -516,20 +528,23 @@ export default function Pallets() {
             </div>
 
             <div className="flex flex-wrap items-center justify-between gap-3 border-t border-ink-900/5 pt-4">
+              {canShip && (
               <p className="text-sm text-ink-600/70">
                 Pažymėta: <strong className="text-ink-900">{selectedClosedCount}</strong> paletė(-ių),{" "}
                 <strong className="text-ink-900">{selectedClosedQty}</strong> vnt.
               </p>
+              )}
               <div className="flex flex-wrap gap-2">
                 <button
                   type="button"
                   onClick={handlePrintSelectedClosed}
-                  disabled={selectedClosedCount === 0}
+                  disabled={canShip ? selectedClosedCount === 0 : closedPalletsFiltered.length === 0}
                   className="btn-secondary"
                 >
                   <Printer size={15} />
                   Spausdinti etiketes
                 </button>
+                {canShip && (
                 <button
                   type="button"
                   onClick={handleMarkSelectedReady}
@@ -541,6 +556,7 @@ export default function Pallets() {
                     : <PackageCheck size={15} />}
                   Pažymėti kaip paruoštą išvežimui
                 </button>
+                )}
               </div>
             </div>
           </>
@@ -551,6 +567,7 @@ export default function Pallets() {
       <div className="panel space-y-4 p-4 lg:p-5">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <h2 className="text-sm font-semibold text-ink-800">Paruošta išvežimui</h2>
+          {canShip && (
           <div className="flex flex-wrap gap-2">
             <button
               type="button"
@@ -569,9 +586,10 @@ export default function Pallets() {
               <Square size={14} /> Nuimti pažymėjimą
             </button>
           </div>
+          )}
         </div>
 
-        {selectionDisabled && (
+        {canShip && selectionDisabled && (
           <p className="text-xs text-ink-600/50">
             Pasirinkite konkrečią paskirtį aukščiau, kad galėtumėte žymėti paletes — negalima maišyti
             skirtingų paskirčių vienoje siuntoje.
@@ -593,7 +611,7 @@ export default function Pallets() {
               <table className="w-full text-left text-sm">
                 <thead className="border-b border-ink-900/5 bg-ink-900/[0.02] text-xs uppercase tracking-wide text-ink-600/60">
                   <tr>
-                    <th className="w-10 px-4 py-3"></th>
+                    {canShip && <th className="w-10 px-4 py-3"></th>}
                     <th className="px-4 py-3 font-semibold">Paletė</th>
                     <th className="px-4 py-3 font-semibold">Uždarymo data</th>
                     <th className="px-4 py-3 font-semibold">Vnt.</th>
@@ -606,6 +624,7 @@ export default function Pallets() {
                       key={p.id}
                       className={selectedReady.has(p.id) ? "bg-signal-orange/5" : "hover:bg-ink-900/[0.015]"}
                     >
+                      {canShip && (
                       <td className="px-4 py-3">
                         <input
                           type="checkbox"
@@ -615,6 +634,7 @@ export default function Pallets() {
                           className="h-4 w-4 rounded border-ink-700/30 text-signal-orange focus:ring-signal-orange/30"
                         />
                       </td>
+                      )}
                       <td className="px-4 py-3 font-semibold text-ink-900">
                         {palletLabel(p)}
                         <DestinationBadge destination={p.destination} />
@@ -646,15 +666,17 @@ export default function Pallets() {
             </div>
 
             <div className="flex flex-wrap items-center justify-between gap-3 border-t border-ink-900/5 pt-4">
+              {canShip && (
               <p className="text-sm text-ink-600/70">
                 Pažymėta: <strong className="text-ink-900">{selectedReadyCount}</strong> paletė(-ių),{" "}
                 <strong className="text-ink-900">{selectedReadyQty}</strong> vnt.
               </p>
+              )}
               <div className="flex flex-wrap gap-2">
                 <button
                   type="button"
                   onClick={handlePrintSelectedReady}
-                  disabled={selectedReadyCount === 0}
+                  disabled={canShip ? selectedReadyCount === 0 : readyPalletsFiltered.length === 0}
                   className="btn-secondary"
                 >
                   <Printer size={15} />
@@ -663,7 +685,7 @@ export default function Pallets() {
                 <button
                   type="button"
                   onClick={handleDownloadSelected}
-                  disabled={selectedReadyCount === 0 || downloading}
+                  disabled={canShip ? selectedReadyCount === 0 || downloading : downloading || readyPalletsFiltered.length === 0}
                   className="btn-secondary"
                 >
                   {downloading
@@ -671,6 +693,7 @@ export default function Pallets() {
                     : <FileSpreadsheet size={15} />}
                   Atsisiųsti Excel sąrašą
                 </button>
+                {canShip && (
                 <button
                   type="button"
                   onClick={handleMarkSelectedSent}
@@ -682,6 +705,7 @@ export default function Pallets() {
                     : <Send size={15} />}
                   Pažymėti kaip išvežta
                 </button>
+                )}
               </div>
             </div>
           </>

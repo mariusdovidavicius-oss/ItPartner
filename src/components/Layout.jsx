@@ -132,11 +132,15 @@ export default function Layout() {
     const extra = [];
     if (canSeeWriteoffs) extra.push({ to: "/priedai/nurasymai", label: "Nurašymai", icon: PackageMinus });
     if (canSeeWriteoffs) extra.push({ to: "/priedai/statistika", label: "Statistika", icon: BarChart3 });
-    if (isAdmin) extra.push({ to: "/priedai/vartotojai", label: "Vartotojai", icon: Users });
-    if (extra.length === 0) return BASE_NAV_GROUPS;
-    return BASE_NAV_GROUPS.map((g) =>
-      g.label === "Priedų sandėlis" ? { ...g, items: [...g.items, ...extra] } : g
-    );
+
+    const groups = extra.length
+      ? BASE_NAV_GROUPS.map((g) =>
+          g.label === "Priedų sandėlis" ? { ...g, items: [...g.items, ...extra] } : g
+        )
+      : BASE_NAV_GROUPS;
+
+    if (!isAdmin) return groups;
+    return [...groups, { label: "Admin", items: [{ to: "/priedai/vartotojai", label: "Vartotojai", icon: Users }] }];
   }, [isAdmin, canSeeWriteoffs]);
 
   return (

@@ -10,16 +10,19 @@ export function AuthProvider({ children }) {
   const [session, setSession] = useState(undefined); // undefined = dar nežinoma, null = neprisijungęs
   const [profile, setProfile] = useState(null);
   const [permissions, setPermissions] = useState(new Set());
+  const [palletPermissions, setPalletPermissions] = useState(new Set());
   const [loadingProfile, setLoadingProfile] = useState(false);
 
   const loadProfile = useCallback(async (userId) => {
     setLoadingProfile(true);
-    const [{ data: profileRow }, { data: permRows }] = await Promise.all([
+    const [{ data: profileRow }, { data: permRows }, { data: palletPermRows }] = await Promise.all([
       supabase.from("profiles").select("id, username, is_admin").eq("id", userId).maybeSingle(),
-      supabase.from("user_permissions").select("permission").eq("user_id", userId)
+      supabase.from("user_permissions").select("permission").eq("user_id", userId),
+      supabase.from("pallet_permissions").select("permission").eq("user_id", userId)
     ]);
     setProfile(profileRow || null);
     setPermissions(new Set((permRows || []).map((r) => r.permission)));
+    setPalletPermissions(new Set((palletPermRows || []).map((r) => r.permission)));
     setLoadingProfile(false);
   }, []);
 
@@ -36,6 +39,7 @@ export function AuthProvider({ children }) {
       } else {
         setProfile(null);
         setPermissions(new Set());
+        setPalletPermissions(new Set());
       }
     });
 
@@ -58,13 +62,19 @@ export function AuthProvider({ children }) {
     return !!profile?.is_admin || permissions.has(perm);
   }
 
+  function hasPalletPermission(perm) {
+    return !!profile?.is_admin || palletPermissions.has(perm);
+  }
+
   const value = {
     session,
     user: session?.user ?? null,
     profile,
     permissions,
+    palletPermissions,
     isAdmin: !!profile?.is_admin,
     hasPermission,
+    hasPalletPermission,
     loading: session === undefined || (!!session && loadingProfile && !profile),
     signInWithId,
     signOut

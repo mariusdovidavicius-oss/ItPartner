@@ -31,7 +31,7 @@ export default function App() {
         <Route path="/priedai/statistika" element={<RequirePermission permission="delete"><PartsStats /></RequirePermission>} />
         <Route path="/priedai/vartotojai" element={<RequirePermission permission="admin"><PartsUsers /></RequirePermission>} />
         {/* Administraciniai puslapiai — tik tiesioginiu adresu, be nuorodos navigacijoje */}
-        <Route path="/katalogas" element={<CatalogImport />} />
+        <Route path="/katalogas" element={<RequirePermission palletPermission="scan"><CatalogImport /></RequirePermission>} />
         <Route path="/admin-reset" element={<RequirePermission permission="admin"><AdminReset /></RequirePermission>} />
       </Route>
     </Routes>
