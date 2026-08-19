@@ -1,5 +1,5 @@
 import { createClient } from "@supabase/supabase-js";
-import { PERMISSION_KEYS, PALLET_PERMISSION_KEYS } from "../src/lib/permissions.js";
+import { PERMISSION_KEYS, PALLET_PERMISSION_KEYS, DEVICE_PERMISSION_KEYS } from "../src/lib/permissions.js";
 import { AUTH_EMAIL_DOMAIN } from "../src/lib/authConstants.js";
 
 // Vercel serverless funkcija — vienintelė vieta, kur naudojamas Supabase
@@ -46,7 +46,7 @@ export default async function handler(req, res) {
     return;
   }
 
-  const { id, password, permissions = [], palletPermissions = [], isAdmin = false } = req.body || {};
+  const { id, password, permissions = [], palletPermissions = [], devicePermissions = [], isAdmin = false } = req.body || {};
 
   const cleanId = String(id || "").trim().toLowerCase();
   if (!/^[a-z0-9._-]{2,32}$/.test(cleanId)) {
@@ -62,6 +62,9 @@ export default async function handler(req, res) {
   );
   const cleanPalletPermissions = (Array.isArray(palletPermissions) ? palletPermissions : []).filter((p) =>
     PALLET_PERMISSION_KEYS.includes(p)
+  );
+  const cleanDevicePermissions = (Array.isArray(devicePermissions) ? devicePermissions : []).filter((p) =>
+    DEVICE_PERMISSION_KEYS.includes(p)
   );
 
   const email = `${cleanId}@${AUTH_EMAIL_DOMAIN}`;
@@ -109,6 +112,17 @@ export default async function handler(req, res) {
     if (error) {
       await supabaseAdmin.auth.admin.deleteUser(newUserId);
       res.status(500).json({ error: `Vartotojas sukurtas, bet nepavyko priskirti paletžų teisių: ${error.message}` });
+      return;
+    }
+  }
+
+  if (cleanDevicePermissions.length > 0) {
+    const { error } = await supabaseAdmin
+      .from("device_permissions")
+      .insert(cleanDevicePermissions.map((permission) => ({ user_id: newUserId, permission })));
+    if (error) {
+      await supabaseAdmin.auth.admin.deleteUser(newUserId);
+      res.status(500).json({ error: `Vartotojas sukurtas, bet nepavyko priskirti prietaisų teisių: ${error.message}` });
       return;
     }
   }

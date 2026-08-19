@@ -2,7 +2,11 @@ import { useEffect, useState } from "react";
 import { Loader2, UserPlus, X, AlertCircle, ShieldCheck } from "lucide-react";
 import { supabase } from "../lib/supabaseClient";
 import { useAuth } from "../lib/AuthProvider";
-import { PERMISSIONS as PERMISSION_LABELS, PALLET_PERMISSIONS as PALLET_PERMISSION_LABELS } from "../lib/permissions";
+import {
+  PERMISSIONS as PERMISSION_LABELS,
+  PALLET_PERMISSIONS as PALLET_PERMISSION_LABELS,
+  DEVICE_PERMISSIONS as DEVICE_PERMISSION_LABELS
+} from "../lib/permissions";
 
 export default function PartsUsers() {
   const { session, user: currentUser } = useAuth();
@@ -18,10 +22,11 @@ export default function PartsUsers() {
 
   async function load() {
     setLoading(true);
-    const [{ data: profiles }, { data: perms }, { data: palletPerms }] = await Promise.all([
+    const [{ data: profiles }, { data: perms }, { data: palletPerms }, { data: devicePerms }] = await Promise.all([
       supabase.from("profiles").select("id, username, is_admin").order("username"),
       supabase.from("user_permissions").select("user_id, permission"),
-      supabase.from("pallet_permissions").select("user_id, permission")
+      supabase.from("pallet_permissions").select("user_id, permission"),
+      supabase.from("device_permissions").select("user_id, permission")
     ]);
     const permsByUser = new Map();
     (perms || []).forEach((p) => {
@@ -33,11 +38,17 @@ export default function PartsUsers() {
       if (!palletPermsByUser.has(p.user_id)) palletPermsByUser.set(p.user_id, new Set());
       palletPermsByUser.get(p.user_id).add(p.permission);
     });
+    const devicePermsByUser = new Map();
+    (devicePerms || []).forEach((p) => {
+      if (!devicePermsByUser.has(p.user_id)) devicePermsByUser.set(p.user_id, new Set());
+      devicePermsByUser.get(p.user_id).add(p.permission);
+    });
     setUsers(
       (profiles || []).map((p) => ({
         ...p,
         permissions: permsByUser.get(p.id) || new Set(),
-        palletPermissions: palletPermsByUser.get(p.id) || new Set()
+        palletPermissions: palletPermsByUser.get(p.id) || new Set(),
+        devicePermissions: devicePermsByUser.get(p.id) || new Set()
       }))
     );
     setLoading(false);
@@ -125,6 +136,11 @@ export default function PartsUsers() {
                       {p.label} <span className="normal-case font-normal">(paletės)</span>
                     </th>
                   ))}
+                  {DEVICE_PERMISSION_LABELS.map((p) => (
+                    <th key={p.key} className="px-3 py-2.5 text-center font-semibold text-ink-600/50">
+                      {p.label} <span className="normal-case font-normal">(prietaisai)</span>
+                    </th>
+                  ))}
                   <th className="px-3 py-2.5 text-center font-semibold">Admin</th>
                 </tr>
               </thead>
@@ -154,6 +170,19 @@ export default function PartsUsers() {
                           disabled={u.is_admin || busyKey === `${u.id}:pallet_permissions:${p.key}`}
                           onChange={(e) =>
                             togglePermission(u.id, p.key, e.target.checked, "pallet_permissions", "palletPermissions")
+                          }
+                          className="h-4 w-4 rounded border-ink-700/30 text-signal-orange focus:ring-signal-orange/30 disabled:opacity-40"
+                        />
+                      </td>
+                    ))}
+                    {DEVICE_PERMISSION_LABELS.map((p) => (
+                      <td key={p.key} className="px-3 py-2.5 text-center">
+                        <input
+                          type="checkbox"
+                          checked={u.is_admin || u.devicePermissions.has(p.key)}
+                          disabled={u.is_admin || busyKey === `${u.id}:device_permissions:${p.key}`}
+                          onChange={(e) =>
+                            togglePermission(u.id, p.key, e.target.checked, "device_permissions", "devicePermissions")
                           }
                           className="h-4 w-4 rounded border-ink-700/30 text-signal-orange focus:ring-signal-orange/30 disabled:opacity-40"
                         />
@@ -196,6 +225,7 @@ function CreateUserModal({ accessToken, onClose, onCreated }) {
   const [password, setPassword] = useState("");
   const [permissions, setPermissions] = useState(new Set(["view"]));
   const [palletPermissions, setPalletPermissions] = useState(new Set());
+  const [devicePermissions, setDevicePermissions] = useState(new Set());
   const [isAdmin, setIsAdmin] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
@@ -218,6 +248,15 @@ function CreateUserModal({ accessToken, onClose, onCreated }) {
     });
   }
 
+  function toggleDevicePerm(perm) {
+    setDevicePermissions((prev) => {
+      const next = new Set(prev);
+      if (next.has(perm)) next.delete(perm);
+      else next.add(perm);
+      return next;
+    });
+  }
+
   async function submit(e) {
     e.preventDefault();
     setSubmitting(true);
@@ -231,6 +270,7 @@ function CreateUserModal({ accessToken, onClose, onCreated }) {
           password,
           permissions: [...permissions],
           palletPermissions: [...palletPermissions],
+          devicePermissions: [...devicePermissions],
           isAdmin
         })
       });
@@ -299,6 +339,23 @@ function CreateUserModal({ accessToken, onClose, onCreated }) {
                     checked={palletPermissions.has(p.key)}
                     disabled={isAdmin}
                     onChange={() => togglePalletPerm(p.key)}
+                    className="h-4 w-4 rounded border-ink-700/30 text-signal-orange focus:ring-signal-orange/30"
+                  />
+                  {p.label}
+                </label>
+              ))}
+            </div>
+          </div>
+          <div>
+            <p className="mb-1.5 text-xs font-semibold text-ink-600/70">Prietaisų teisės</p>
+            <div className="grid grid-cols-2 gap-2">
+              {DEVICE_PERMISSION_LABELS.map((p) => (
+                <label key={p.key} className="flex items-center gap-2 text-sm text-ink-700">
+                  <input
+                    type="checkbox"
+                    checked={devicePermissions.has(p.key)}
+                    disabled={isAdmin}
+                    onChange={() => toggleDevicePerm(p.key)}
                     className="h-4 w-4 rounded border-ink-700/30 text-signal-orange focus:ring-signal-orange/30"
                   />
                   {p.label}

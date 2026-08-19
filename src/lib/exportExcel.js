@@ -148,7 +148,62 @@ export async function exportPartsToExcel(partsList, filename) {
   return { ok: true };
 }
 
-const WRITEOFF_REASON_LABELS = { parduota: "Parduota", remontui: "Panaudota remontui", kita: "Kita" };
+// Prietaisų (devices) sąrašo eksportas — kiekvienas prietaisas gali turėti
+// kelias lokacijas (device_stock), todėl kiekviena lokacija eksportuojama
+// SAVO eilute (tas pats formatas, koks yra originaliame Excel šaltinyje).
+// Prietaisas be jokio likučio įrašo eksportuojamas su tuščia lokacija/0 kiekiu.
+// Komentaras priklauso VISAM prietaisui (devices.notes), todėl kartojasi
+// kiekvienoje jo lokacijos eilutėje.
+export async function exportDevicesToExcel(devicesList, filename) {
+  const workbook = new ExcelJS.Workbook();
+  const sheet = workbook.addWorksheet("Prietaisai");
+  sheet.columns = [
+    { width: 40 }, { width: 16 }, { width: 10 }, { width: 14 }, { width: 30 }, { width: 14 }
+  ];
+
+  const thin = { style: "thin" };
+  const fullBorder = { top: thin, left: thin, bottom: thin, right: thin };
+
+  const headerRow = sheet.addRow(["Prietaisas", "IAN", "Kiekis", "Lokacija", "Komentaras", "Gamintojas"]);
+  headerRow.eachCell({ includeEmpty: true }, (cell) => {
+    cell.font = { bold: true };
+    cell.border = fullBorder;
+  });
+
+  devicesList.forEach((d) => {
+    const stock = d.device_stock && d.device_stock.length > 0 ? d.device_stock : [null];
+    stock.forEach((s) => {
+      const row = sheet.addRow([
+        d.name || "",
+        d.ian || "",
+        s?.quantity ?? 0,
+        s?.location || "",
+        d.notes || "",
+        d.manufacturer || ""
+      ]);
+      row.eachCell({ includeEmpty: true }, (cell) => {
+        cell.border = fullBorder;
+      });
+    });
+  });
+
+  const buffer = await workbook.xlsx.writeBuffer();
+  const blob = new Blob([buffer], {
+    type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+  });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+
+  return { ok: true };
+}
+
+const WRITEOFF_REASON_LABELS = { parduota: "Parduota", remontui: "Panaudota remontui", garantija: "Garantinis pakeitimas", kita: "Kita" };
 
 // Priedų nurašymų (parts_writeoffs) sąrašo eksportas — naudojama
 // /priedai/nurasymai puslapyje.
@@ -180,6 +235,65 @@ export async function exportPartsWriteoffsToExcel(writeoffsList, filename) {
       formatDate(w.created_at),
       w.parts?.name || "",
       w.parts?.part_code || "",
+      w.quantity ?? 0,
+      WRITEOFF_REASON_LABELS[w.reason_type] || w.reason_type,
+      detail,
+      w.profiles?.username || "",
+      w.undone_at ? "Atšaukta" : "Aktyvus"
+    ]);
+    row.eachCell({ includeEmpty: true }, (cell) => {
+      cell.border = fullBorder;
+    });
+  });
+
+  const buffer = await workbook.xlsx.writeBuffer();
+  const blob = new Blob([buffer], {
+    type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+  });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+
+  return { ok: true };
+}
+
+// Prietaisų nurašymų (device_writeoffs) sąrašo eksportas — naudojama
+// /prietaisai/nurasymai puslapyje. Skirtingai nuo priedų nurašymų, čia yra
+// papildomas "Lokacija" stulpelis, nes prietaiso kiekis yra per lokaciją.
+export async function exportDeviceWriteoffsToExcel(writeoffsList, filename) {
+  const workbook = new ExcelJS.Workbook();
+  const sheet = workbook.addWorksheet("Nurašymai");
+  sheet.columns = [
+    { width: 14 }, { width: 28 }, { width: 16 }, { width: 14 }, { width: 8 },
+    { width: 18 }, { width: 24 }, { width: 16 }, { width: 12 }
+  ];
+
+  const thin = { style: "thin" };
+  const fullBorder = { top: thin, left: thin, bottom: thin, right: thin };
+
+  const headerRow = sheet.addRow([
+    "Data", "Prietaisas", "IAN", "Lokacija", "Kiekis", "Priežastis", "Detalė", "Kas", "Būsena"
+  ]);
+  headerRow.eachCell({ includeEmpty: true }, (cell) => {
+    cell.font = { bold: true };
+    cell.border = fullBorder;
+  });
+
+  writeoffsList.forEach((w) => {
+    const detail =
+      w.reason_type === "parduota" ? (w.price != null ? `${w.price} €` : "") :
+      w.reason_type === "remontui" ? (w.rma || "") :
+      (w.reason || "");
+    const row = sheet.addRow([
+      formatDate(w.created_at),
+      w.device_name || "",
+      w.device_ian || "",
+      w.location || "",
       w.quantity ?? 0,
       WRITEOFF_REASON_LABELS[w.reason_type] || w.reason_type,
       detail,

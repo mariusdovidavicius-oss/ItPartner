@@ -1251,3 +1251,599 @@ create policy "Katalogo atnaujinimas pagal 'scan' teisę"
   to authenticated
   using (public.has_pallet_permission(auth.uid(), 'scan'))
   with check (public.has_pallet_permission(auth.uid(), 'scan'));
+
+-- ------------------------------------------------------------
+-- 25. DEVICES — prietaisų (įrangos) sandėlio modulis. Nepriklausomas nuo
+-- items/pallets/shipments IR nuo parts (priedų) modulio, su savo teisėmis
+-- (device_permissions). Duomenys normalizuoti į dvi lenteles, nes tas pats
+-- IAN gali pasikartoti keliose Excel eilutėse (skiriasi tik kiekis/
+-- lokacija/komentaras — skirtingos to paties modelio saugojimo vietos):
+--   devices       — unikalus prietaiso MODELIS (IAN unikalus).
+--   device_stock  — kiekis konkrečioje lokacijoje (device_id + location).
+-- Komentaras (Excel "E") saugomas device_stock lygmenyje, ne devices, nes
+-- paprastai apibūdina konkretaus likučio būklę konkrečioje lokacijoje.
+--
+-- Peržiūra (SELECT) VIEŠA — kaip items/pallets/shipments/catalog/parts,
+-- sąrašą mato bet kas be prisijungimo. Redagavimas/trynimas/nurašymas/
+-- importas ir toliau reikalauja prisijungimo + atitinkamos teisės.
+-- (Naujai DB — čia; esamai DB naudoti migrate_add_devices.sql)
+-- ------------------------------------------------------------
+create table if not exists public.devices (
+  id            uuid primary key default gen_random_uuid(),
+  ian           text not null unique,           -- "IAN" — identifikuoja MODELĮ, ne fizinį vienetą
+  name          text,                            -- "Prietaisas"
+  manufacturer  text,                            -- "Gamintojas" (šiuo metu: Grizzly, Kompernass — laisvas tekstas, ne enum)
+  notes         text,                            -- "Komentaras" — VIENAS visam prietaisui (ne per lokaciją, žr. migrate_devices_notes.sql)
+  min_quantity  integer,                         -- individualus mažo likučio slenkstis (BENDRAM kiekiui per visas lokacijas); NULL = numatyta reikšmė (3, žr. device_totals.stock_level žemiau)
+  created_at    timestamptz not null default now(),
+  updated_at    timestamptz not null default now(),
+  constraint devices_min_quantity_check check (min_quantity is null or min_quantity >= 0)
+);
+
+comment on table public.devices is 'Unikalūs prietaisų modeliai (IAN → pavadinimas/gamintojas/komentaras), be kiekio/lokacijos informacijos.';
+
+create index if not exists devices_name_idx on public.devices (name);
+create index if not exists devices_manufacturer_idx on public.devices (manufacturer);
+
+drop trigger if exists devices_set_updated_at on public.devices;
+create trigger devices_set_updated_at
+  before update on public.devices
+  for each row execute function public.set_updated_at();
+
+create table if not exists public.device_stock (
+  id          uuid primary key default gen_random_uuid(),
+  device_id   uuid not null references public.devices (id) on delete cascade,
+  location    text not null default '-',         -- "Lokacija" (laisvas tekstas, ne vien skaičiai)
+  quantity    integer not null default 0,
+  notes       text,                               -- NEBENAUDOJAMAS front-end pusėje — komentaras nuo migrate_devices_notes.sql yra devices.notes (vienas visam prietaisui)
+  created_at  timestamptz not null default now(),
+  updated_at  timestamptz not null default now(),
+  constraint device_stock_quantity_check check (quantity >= 0),
+  constraint device_stock_device_location_unique unique (device_id, location)
+);
+
+comment on table public.device_stock is 'Prietaiso kiekis konkrečioje lokacijoje. Vienas (device_id, location) turi tiksliai vieną eilutę.';
+
+create index if not exists device_stock_device_id_idx on public.device_stock (device_id);
+create index if not exists device_stock_location_idx on public.device_stock (location);
+
+drop trigger if exists device_stock_set_updated_at on public.device_stock;
+create trigger device_stock_set_updated_at
+  before update on public.device_stock
+  for each row execute function public.set_updated_at();
+
+create table if not exists public.device_permissions (
+  user_id    uuid not null references public.profiles (id) on delete cascade,
+  permission text not null check (permission in ('view', 'edit', 'delete', 'import')),
+  granted_at timestamptz not null default now(),
+  primary key (user_id, permission)
+);
+
+comment on table public.device_permissions is 'Kiekvienam vartotojui suteiktos prietaisų modulio teisės — nepriklausomos nuo user_permissions (priedų) ir pallet_permissions (paletžų).';
+
+alter table public.device_permissions enable row level security;
+
+create policy "Vartotojas mato savo prietaisų teises, adminas visas"
+  on public.device_permissions for select
+  to authenticated
+  using (user_id = auth.uid() or public.is_admin(auth.uid()));
+
+create policy "Adminas tvarko prietaisų teises"
+  on public.device_permissions for all
+  to authenticated
+  using (public.is_admin(auth.uid()))
+  with check (public.is_admin(auth.uid()));
+
+create or replace function public.has_device_permission(uid uuid, perm text)
+returns boolean
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select public.is_admin(uid) or exists (
+    select 1 from public.device_permissions where user_id = uid and permission = perm
+  );
+$$;
+
+grant execute on function public.has_device_permission(uuid, text) to authenticated, anon;
+
+alter table public.devices enable row level security;
+alter table public.device_stock enable row level security;
+
+create policy "Vieša prietaisų peržiūra"
+  on public.devices for select
+  to anon, authenticated
+  using (true);
+
+create policy "Prietaisų kūrimas pagal 'edit' teisę"
+  on public.devices for insert
+  to authenticated
+  with check (public.has_device_permission(auth.uid(), 'edit'));
+
+create policy "Prietaisų atnaujinimas pagal 'edit' teisę"
+  on public.devices for update
+  to authenticated
+  using (public.has_device_permission(auth.uid(), 'edit'))
+  with check (public.has_device_permission(auth.uid(), 'edit'));
+
+create policy "Prietaisų trynimas pagal 'delete' teisę"
+  on public.devices for delete
+  to authenticated
+  using (public.has_device_permission(auth.uid(), 'delete'));
+
+create policy "Vieša likučių peržiūra"
+  on public.device_stock for select
+  to anon, authenticated
+  using (true);
+
+create policy "Likučių kūrimas pagal 'edit' teisę"
+  on public.device_stock for insert
+  to authenticated
+  with check (public.has_device_permission(auth.uid(), 'edit'));
+
+create policy "Likučių atnaujinimas pagal 'edit' teisę"
+  on public.device_stock for update
+  to authenticated
+  using (public.has_device_permission(auth.uid(), 'edit'))
+  with check (public.has_device_permission(auth.uid(), 'edit'));
+
+create policy "Likučių trynimas pagal 'delete' teisę"
+  on public.device_stock for delete
+  to authenticated
+  using (public.has_device_permission(auth.uid(), 'delete'));
+
+create or replace function public.import_devices(rows jsonb, p_clear_existing boolean default false)
+returns json
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  r              jsonb;
+  v_ian          text;
+  v_location     text;
+  v_device_id    uuid;
+  device_count   integer := 0;
+  stock_count    integer := 0;
+  skipped_count  integer := 0;
+begin
+  if not public.has_device_permission(auth.uid(), 'import') then
+    raise exception 'Neturite prietaisų importo teisės.';
+  end if;
+
+  if p_clear_existing then
+    if not public.has_device_permission(auth.uid(), 'delete') then
+      raise exception 'Norint prieš importą išvalyti esamus duomenis, reikia trynimo teisės.';
+    end if;
+    delete from public.devices;
+  end if;
+
+  for r in select * from jsonb_array_elements(rows)
+  loop
+    v_ian := nullif(trim(r->>'ian'), '');
+    if v_ian is null then
+      skipped_count := skipped_count + 1;
+      continue;
+    end if;
+
+    -- coalesce visuose trijuose laukuose — jei pakartotinio importo eilutėje
+    -- (pvz. antra to paties IAN lokacijos eilutė) laukas tuščias, paliekama
+    -- jau esama reikšmė, o ne perrašoma NULL.
+    insert into public.devices (ian, name, manufacturer, notes)
+    values (v_ian, nullif(r->>'name', ''), nullif(r->>'manufacturer', ''), nullif(r->>'notes', ''))
+    on conflict (ian) do update
+      set name = coalesce(excluded.name, public.devices.name),
+          manufacturer = coalesce(excluded.manufacturer, public.devices.manufacturer),
+          notes = coalesce(excluded.notes, public.devices.notes),
+          updated_at = now()
+    returning id into v_device_id;
+
+    device_count := device_count + 1;
+
+    v_location := coalesce(nullif(trim(r->>'location'), ''), '-');
+
+    insert into public.device_stock (device_id, location, quantity)
+    values (
+      v_device_id,
+      v_location,
+      coalesce((r->>'quantity')::integer, 0)
+    )
+    on conflict (device_id, location) do update
+      set quantity = excluded.quantity,
+          updated_at = now();
+
+    stock_count := stock_count + 1;
+  end loop;
+
+  return json_build_object(
+    'devices', device_count,
+    'stock_rows', stock_count,
+    'skipped', skipped_count
+  );
+end;
+$$;
+
+grant execute on function public.import_devices(jsonb, boolean) to authenticated;
+
+alter publication supabase_realtime add table public.devices;
+alter publication supabase_realtime add table public.device_stock;
+
+-- BŪTINA "security_invoker = true" — be jo VIEW vykdytų RLS VIEW SAVININKO
+-- (Supabase atveju "postgres", turinčio BYPASSRLS) teisėmis ir visiškai
+-- apeitų devices/device_stock RLS (žr. platesnį komentarą migrate_add_devices.sql).
+create or replace view public.device_totals
+with (security_invoker = true)
+as
+select
+  d.id,
+  d.ian,
+  d.name,
+  d.manufacturer,
+  coalesce(sum(ds.quantity), 0)::integer as total_quantity,
+  count(ds.id)::integer as location_count,
+  d.min_quantity,
+  case
+    when coalesce(sum(ds.quantity), 0) <= 0 then 'out'
+    when coalesce(sum(ds.quantity), 0) <= coalesce(d.min_quantity, 3) then 'low'
+    else 'ok'
+  end as stock_level
+from public.devices d
+left join public.device_stock ds on ds.device_id = d.id
+group by d.id, d.ian, d.name, d.manufacturer, d.min_quantity;
+
+comment on view public.device_totals is 'Kiekvieno prietaiso bendras kiekis, susumuotas per visas lokacijas, + mažo likučio būsena (stock_level: out/low/ok). security_invoker=true — vykdoma užklausėjo teisėmis, todėl paveldi devices/device_stock RLS.';
+
+-- ------------------------------------------------------------
+-- device_writeoffs — prietaisų nurašymo istorija, po lokaciją (žr.
+-- migrate_add_device_writeoffs.sql). "location" saugoma kaip laisvas
+-- tekstas (kopija nurašymo metu), ne FK į device_stock, kad audito įrašas
+-- išliktų net ištrynus tos lokacijos likutį. "device_name"/"device_ian"
+-- taip pat denormalizuoti (kopija nurašymo metu): device_id yra "on delete
+-- set null" (ne cascade), tad ištrynus PATĮ PRIETAISĄ audito istorija
+-- išlieka; be denormalizuotų laukų vardas/IAN dingtų kartu su devices
+-- eilute, o be jų šiam sąrašui reikėtų JOIN su devices (kuriam RLS
+-- reikalauja atskiros 'view' teisės, ne tik 'delete').
+-- ------------------------------------------------------------
+create table if not exists public.device_writeoffs (
+  id          uuid primary key default gen_random_uuid(),
+  device_id   uuid references public.devices (id) on delete set null,
+  device_name text,
+  device_ian  text not null,
+  location    text not null,
+  user_id     uuid references public.profiles (id) on delete set null,
+  quantity    integer not null check (quantity > 0),
+  reason_type text not null check (reason_type in ('parduota', 'remontui', 'kita', 'garantija')),
+  price       numeric(10, 2),
+  rma         text,
+  reason      text,
+  created_at  timestamptz not null default now(),
+  undone_at   timestamptz,
+  undone_by   uuid references public.profiles (id) on delete set null
+);
+
+comment on table public.device_writeoffs is 'Prietaisų nurašymų (parduota/remontui/kita) audito istorija, po lokaciją. device_name/device_ian denormalizuoti — išgyvena prietaiso ištrynimą.';
+
+create index if not exists device_writeoffs_device_id_idx on public.device_writeoffs (device_id);
+
+alter table public.device_writeoffs enable row level security;
+
+create policy "Prietaisų nurašymų istorija matoma pagal 'delete' teisę"
+  on public.device_writeoffs for select
+  to authenticated
+  using (public.has_device_permission(auth.uid(), 'delete'));
+
+create or replace function public.writeoff_device(
+  p_device_id uuid,
+  p_location text,
+  p_quantity integer,
+  p_reason_type text,
+  p_price numeric default null,
+  p_rma text default null,
+  p_reason text default null
+)
+returns uuid
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_current_qty  integer;
+  v_device_name  text;
+  v_device_ian   text;
+  v_writeoff_id  uuid;
+begin
+  if not public.has_device_permission(auth.uid(), 'delete') then
+    raise exception 'Neturite nurašymo teisės.';
+  end if;
+
+  if p_quantity is null or p_quantity <= 0 then
+    raise exception 'Nurašomas kiekis turi būti didesnis už nulį.';
+  end if;
+
+  if p_reason_type not in ('parduota', 'remontui', 'kita', 'garantija') then
+    raise exception 'Neteisinga nurašymo priežastis.';
+  end if;
+
+  if p_reason_type = 'parduota' and (p_price is null or p_price <= 0) then
+    raise exception 'Įveskite kainą.';
+  end if;
+
+  if p_reason_type = 'remontui' and (p_rma is null or trim(p_rma) = '') then
+    raise exception 'Įveskite RMA numerį.';
+  end if;
+
+  if p_reason_type = 'kita' and (p_reason is null or trim(p_reason) = '') then
+    raise exception 'Įveskite priežastį.';
+  end if;
+
+  select ds.quantity, d.name, d.ian
+    into v_current_qty, v_device_name, v_device_ian
+    from public.device_stock ds
+    join public.devices d on d.id = ds.device_id
+    where ds.device_id = p_device_id and ds.location = p_location
+    for update of ds;
+
+  if v_current_qty is null then
+    raise exception 'Lokacija nerasta.';
+  end if;
+  if p_quantity > v_current_qty then
+    raise exception 'Nurašomas kiekis (%) negali viršyti turimo likučio (%).', p_quantity, v_current_qty;
+  end if;
+
+  update public.device_stock
+    set quantity = quantity - p_quantity
+    where device_id = p_device_id and location = p_location;
+
+  insert into public.device_writeoffs
+    (device_id, device_name, device_ian, location, user_id, quantity, reason_type, price, rma, reason)
+  values (
+    p_device_id,
+    v_device_name,
+    v_device_ian,
+    p_location,
+    auth.uid(),
+    p_quantity,
+    p_reason_type,
+    case when p_reason_type = 'parduota' then p_price else null end,
+    case when p_reason_type = 'remontui' then nullif(trim(p_rma), '') else null end,
+    case when p_reason_type in ('kita', 'garantija') then nullif(trim(p_reason), '') else null end
+  )
+  returning id into v_writeoff_id;
+
+  return v_writeoff_id;
+end;
+$$;
+
+grant execute on function public.writeoff_device(uuid, text, integer, text, numeric, text, text) to authenticated;
+
+-- Jei pats PRIETAISAS ištrintas (device_id — "on delete set null" — jau
+-- NULL), grąžinti kiekį nebėra kur, tad aiškiai pranešame vietoj to, kad
+-- tyliai nieko nepadarytume arba klaidingai pažymėtume kaip atšauktą.
+create or replace function public.undo_device_writeoff(p_writeoff_id uuid)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_device_id uuid;
+  v_location  text;
+  v_quantity  integer;
+  v_undone    timestamptz;
+begin
+  if not public.has_device_permission(auth.uid(), 'delete') then
+    raise exception 'Neturite teisės atšaukti nurašymo.';
+  end if;
+
+  select device_id, location, quantity, undone_at
+    into v_device_id, v_location, v_quantity, v_undone
+    from public.device_writeoffs
+    where id = p_writeoff_id
+    for update;
+
+  if v_location is null then
+    raise exception 'Nurašymas nerastas.';
+  end if;
+  if v_undone is not null then
+    raise exception 'Šis nurašymas jau atšauktas.';
+  end if;
+  if v_device_id is null then
+    raise exception 'Prietaisas ištrintas — nurašymo atšaukti nebegalima.';
+  end if;
+
+  insert into public.device_stock (device_id, location, quantity)
+  values (v_device_id, v_location, v_quantity)
+  on conflict (device_id, location) do update
+    set quantity = public.device_stock.quantity + excluded.quantity,
+        updated_at = now();
+
+  update public.device_writeoffs
+    set undone_at = now(), undone_by = auth.uid()
+    where id = p_writeoff_id;
+
+  -- Jei šis nurašymas kilo iš atsinešimų sąrašo punkto (žr. device_pickups
+  -- žemiau), tas punktas turi grįžti į "Paimta (dar nenurašyta)" būseną —
+  -- kitaip liktų klaidingai rodomas kaip "Nurašyta".
+  update public.device_pickups
+    set writeoff_id = null
+    where writeoff_id = p_writeoff_id;
+end;
+$$;
+
+grant execute on function public.undo_device_writeoff(uuid) to authenticated;
+
+alter publication supabase_realtime add table public.device_writeoffs;
+
+-- ------------------------------------------------------------
+-- device_pickups — atsinešimų sąrašo punktai (garantinio serviso
+-- srautas: rasti/atsinešti iš sandėlio TO PATIES PAVADINIMO pakaitinį
+-- prietaisą klientui, IAN dažniausiai skiriasi). TRYS atskiri žingsniai/
+-- būsenos (SĄMONINGAI atskirti — fizinis daikto paėmimas iš lentynos ir
+-- jo nurašymas iš apskaitos NĖRA tas pats momentas):
+--   1) Laukia   — picked_at IS NULL.
+--   2) Paimta   — picked_at IS NOT NULL, writeoff_id IS NULL (paprastas
+--                 UPDATE, be jokio poveikio device_stock/device_writeoffs).
+--   3) Nurašyta — writeoff_id IS NOT NULL (žr. finalize_device_pickup()
+--                 žemiau — TIK dabar sumažinamas device_stock IR
+--                 sukuriamas device_writeoffs audito įrašas).
+-- ------------------------------------------------------------
+create table if not exists public.device_pickups (
+  id              uuid primary key default gen_random_uuid(),
+  device_id       uuid not null references public.devices (id) on delete cascade,
+  quantity        integer not null check (quantity > 0),
+  note            text,
+  user_id         uuid references public.profiles (id) on delete set null,
+  created_at      timestamptz not null default now(),
+  picked_at       timestamptz,
+  picked_by       uuid references public.profiles (id) on delete set null,
+  picked_location text,
+  writeoff_id     uuid references public.device_writeoffs (id) on delete set null
+);
+
+comment on table public.device_pickups is 'Atsinešimų sąrašas (garantinis servisas) — "ką reikia atsinešti iš sandėlio" punktai. picked_at = fiziškai paimta; writeoff_id = papildomai nurašyta (žr. finalize_device_pickup()) — du atskiri žingsniai.';
+
+create index if not exists device_pickups_device_id_idx on public.device_pickups (device_id);
+create index if not exists device_pickups_pending_idx on public.device_pickups (created_at) where picked_at is null;
+
+alter table public.device_pickups enable row level security;
+
+create policy "Atsinešimų sąrašas matomas pagal 'edit' teisę"
+  on public.device_pickups for select
+  to authenticated
+  using (public.has_device_permission(auth.uid(), 'edit'));
+
+create policy "Punkto pridėjimas pagal 'edit' teisę"
+  on public.device_pickups for insert
+  to authenticated
+  with check (public.has_device_permission(auth.uid(), 'edit'));
+
+-- Trinti galima TIK dar nepaimtą punktą (picked_at is null) — kai punktas
+-- jau paimtas (nesvarbu, nurašytas ar ne), jis nebelaikomas paprastu
+-- "to-do" punktu.
+create policy "Tik dar nepaimto punkto trynimas pagal 'edit' teisę"
+  on public.device_pickups for delete
+  to authenticated
+  using (public.has_device_permission(auth.uid(), 'edit') and picked_at is null);
+
+-- Pažymėti "paimta" — SECURITY DEFINER funkcija (NE tiesioginė UPDATE RLS
+-- politika), kad "picked_by"/"picked_at" būtų nustatomi SERVERIO pusėje
+-- (auth.uid()/now()), o ne kliento siunčiamais laukais.
+create or replace function public.mark_device_picked(p_pickup_id uuid, p_location text)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_picked_at timestamptz;
+begin
+  if not public.has_device_permission(auth.uid(), 'edit') then
+    raise exception 'Neturite teisės žymėti kaip paimta.';
+  end if;
+
+  select picked_at into v_picked_at from public.device_pickups where id = p_pickup_id for update;
+
+  if not found then
+    raise exception 'Sąrašo punktas nerastas.';
+  end if;
+  if v_picked_at is not null then
+    raise exception 'Šis punktas jau pažymėtas kaip paimtas.';
+  end if;
+
+  update public.device_pickups
+    set picked_at = now(), picked_by = auth.uid(), picked_location = p_location
+    where id = p_pickup_id;
+end;
+$$;
+
+grant execute on function public.mark_device_picked(uuid, text) to authenticated;
+
+-- Nurašymas (kiekio atėmimas) — TIK per šią SECURITY DEFINER funkciją,
+-- reikalauja 'delete' teisės. Naudoja punkte jau užfiksuotą lokaciją/
+-- kiekį/pastabą — antrą kartą jų rinktis nereikia.
+create or replace function public.finalize_device_pickup(p_pickup_id uuid)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_device_id  uuid;
+  v_quantity   integer;
+  v_note       text;
+  v_location   text;
+  v_picked_at  timestamptz;
+  v_writeoff_id uuid;
+begin
+  if not public.has_device_permission(auth.uid(), 'delete') then
+    raise exception 'Neturite nurašymo teisės.';
+  end if;
+
+  select device_id, quantity, note, picked_location, picked_at, writeoff_id
+    into v_device_id, v_quantity, v_note, v_location, v_picked_at, v_writeoff_id
+    from public.device_pickups
+    where id = p_pickup_id
+    for update;
+
+  if v_device_id is null then
+    raise exception 'Sąrašo punktas nerastas.';
+  end if;
+  if v_picked_at is null then
+    raise exception 'Punktas dar nepažymėtas kaip paimtas.';
+  end if;
+  if v_writeoff_id is not null then
+    raise exception 'Šis punktas jau nurašytas.';
+  end if;
+
+  v_writeoff_id := public.writeoff_device(v_device_id, v_location, v_quantity, 'garantija', null, null, v_note);
+
+  update public.device_pickups
+    set writeoff_id = v_writeoff_id
+    where id = p_pickup_id;
+end;
+$$;
+
+grant execute on function public.finalize_device_pickup(uuid) to authenticated;
+
+-- "Atgal" — grąžina klaidingai "paimtą" (bet DAR NENURAŠYTĄ) punktą atgal
+-- į "Laukia" būseną. Jei jau nurašytas, pirma reikia atšaukti patį
+-- nurašymą per undo_device_writeoff (jis automatiškai išvalo writeoff_id).
+create or replace function public.unpick_device_pickup(p_pickup_id uuid)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_picked_at   timestamptz;
+  v_writeoff_id uuid;
+begin
+  if not public.has_device_permission(auth.uid(), 'edit') then
+    raise exception 'Neturite teisės grąžinti punkto.';
+  end if;
+
+  select picked_at, writeoff_id into v_picked_at, v_writeoff_id
+    from public.device_pickups
+    where id = p_pickup_id
+    for update;
+
+  if not found then
+    raise exception 'Sąrašo punktas nerastas.';
+  end if;
+  if v_picked_at is null then
+    raise exception 'Punktas dar ir taip laukia — nėra ko grąžinti.';
+  end if;
+  if v_writeoff_id is not null then
+    raise exception 'Punktas jau nurašytas — pirma atšaukite nurašymą.';
+  end if;
+
+  update public.device_pickups
+    set picked_at = null, picked_by = null, picked_location = null
+    where id = p_pickup_id;
+end;
+$$;
+
+grant execute on function public.unpick_device_pickup(uuid) to authenticated;
+
+alter publication supabase_realtime add table public.device_pickups;

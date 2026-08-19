@@ -1,4 +1,5 @@
 import { Fragment, useEffect, useRef, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import {
   Search, Loader2, Save, Boxes, Minus, Plus, ChevronLeft, ChevronRight,
   ChevronDown, ChevronUp, ImageIcon, Pencil, X, PackagePlus, PackageMinus, Trash2, Download, AlertCircle
@@ -23,11 +24,15 @@ export default function Parts() {
   const { user, hasPermission } = useAuth();
   const canEdit = hasPermission("edit");
   const canDelete = hasPermission("delete");
+  // Pradinė paieška/likučio filtras gali ateiti iš URL (žr. /statistika
+  // plytelių nuorodas — pvz. "?likutis=low", "?q=<pavadinimas>") — skaitoma
+  // TIK vieną kartą (lazy init), toliau valdoma įprastai per UI.
+  const [searchParams] = useSearchParams();
   const [parts, setParts] = useState([]); // dabartinio puslapio įrašai (paieška/filtrai/puslapiavimas — serverio pusėje)
   const [totalCount, setTotalCount] = useState(0); // dabartinį filtrą atitinkančių įrašų skaičius (iš DB)
   const [loading, setLoading] = useState(true);
-  const [search, setSearch] = useState(""); // rodoma įvesties reikšmė
-  const [debouncedSearch, setDebouncedSearch] = useState(""); // naudojama užklausai, atnaujinama su vėlinimu
+  const [search, setSearch] = useState(() => searchParams.get("q") || ""); // rodoma įvesties reikšmė
+  const [debouncedSearch, setDebouncedSearch] = useState(() => searchParams.get("q") || ""); // naudojama užklausai, atnaujinama su vėlinimu
   const [quantityDrafts, setQuantityDrafts] = useState({}); // part id -> juodraštis (nekeičiamas realtime reload metu, kad neišsivalytų nebaigtas redagavimas)
   const [savingId, setSavingId] = useState(null);
   const [pageSize, setPageSize] = useState(PAGE_SIZE_OPTIONS[0]);
@@ -44,7 +49,10 @@ export default function Parts() {
   const [undoingId, setUndoingId] = useState(null);
   const [exporting, setExporting] = useState(false);
   const [locationFilter, setLocationFilter] = useState(""); // "" = visos lokacijos
-  const [stockFilter, setStockFilter] = useState("all"); // all | low | out
+  const [stockFilter, setStockFilter] = useState(() => {
+    const v = searchParams.get("likutis");
+    return v === "low" || v === "out" ? v : "all";
+  }); // all | low | out
   const [locationOptions, setLocationOptions] = useState([]);
   const [actionError, setActionError] = useState("");
 

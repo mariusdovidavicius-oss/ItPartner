@@ -1,6 +1,9 @@
 import { useMemo, useState } from "react";
-import { NavLink, Outlet } from "react-router-dom";
-import { ScanLine, PackageSearch, Boxes, ChevronDown, Wrench, PackageMinus, BarChart3, Users, LogOut } from "lucide-react";
+import { NavLink, Outlet, useLocation } from "react-router-dom";
+import {
+  ScanLine, PackageSearch, Boxes, ChevronDown, Wrench, PackageMinus, BarChart3, Users, LogOut, Cpu, FileUp,
+  ClipboardList, MoreHorizontal, X
+} from "lucide-react";
 import { useAuth } from "../lib/AuthProvider";
 import InlineLoginForm from "./InlineLoginForm";
 
@@ -48,8 +51,24 @@ const BASE_NAV_GROUPS = [
     items: [
       { to: "/priedai", label: "Priedai", icon: Wrench }
     ]
+  },
+  {
+    label: "Prietaisų sandėlis",
+    items: [
+      { to: "/prietaisai", label: "Prietaisai", icon: Cpu }
+    ]
   }
 ];
+
+// Apatiniame mobiliame meniu rodomi TIK šie punktai (šia tvarka) + mygtukas
+// "Daugiau" likusiems — visų meniu punktų dabar iki ~10 (priklausomai nuo
+// teisių), o sugrūdus juos visus į vieną eilutę telefone ikonos taptų per
+// mažos patogiai paspausti pirštu.
+const MOBILE_PRIORITY_PATHS = ["/", "/prietaisai", "/prietaisai/atsinesimai", "/priedai"];
+
+function isItemActive(item, pathname) {
+  return item.end ? pathname === item.to : pathname === item.to || pathname.startsWith(`${item.to}/`);
+}
 
 function NavLinkItem({ to, label, icon: Icon, end, orientation }) {
   return (
@@ -80,11 +99,43 @@ function NavLinkItem({ to, label, icon: Icon, end, orientation }) {
 // grupės sulieknamos į vieną plokščią eilutę — ten vietos antraštėms nėra.
 function NavItems({ orientation, groups }) {
   const [collapsed, setCollapsed] = useState(() => new Set());
+  const [moreOpen, setMoreOpen] = useState(false);
+  const location = useLocation();
 
   if (orientation === "horizontal") {
-    return groups.flatMap((g) => g.items).map((item) => (
-      <NavLinkItem key={item.to} {...item} orientation={orientation} />
-    ));
+    const allItems = groups.flatMap((g) => g.items);
+    const priorityItems = MOBILE_PRIORITY_PATHS
+      .map((path) => allItems.find((item) => item.to === path))
+      .filter(Boolean);
+    const prioritySet = new Set(priorityItems.map((item) => item.to));
+    const remainingGroups = groups
+      .map((g) => ({ ...g, items: g.items.filter((item) => !prioritySet.has(item.to)) }))
+      .filter((g) => g.items.length > 0);
+
+    if (remainingGroups.length === 0) {
+      return allItems.map((item) => <NavLinkItem key={item.to} {...item} orientation={orientation} />);
+    }
+
+    const remainingActive = remainingGroups.some((g) => g.items.some((item) => isItemActive(item, location.pathname)));
+
+    return (
+      <>
+        {priorityItems.map((item) => (
+          <NavLinkItem key={item.to} {...item} orientation={orientation} />
+        ))}
+        <button
+          type="button"
+          onClick={() => setMoreOpen(true)}
+          className={`flex flex-1 flex-col items-center gap-1 py-2 text-[11px] font-medium transition ${
+            remainingActive ? "text-signal-orange" : "text-ink-600/60"
+          }`}
+        >
+          <MoreHorizontal size={20} strokeWidth={2.2} />
+          Daugiau
+        </button>
+        {moreOpen && <MoreMenuSheet groups={remainingGroups} onClose={() => setMoreOpen(false)} />}
+      </>
+    );
   }
 
   function toggleGroup(label) {
@@ -124,24 +175,96 @@ function NavItems({ orientation, groups }) {
   });
 }
 
+// Apatinio mobilaus meniu "Daugiau" — likę (ne prioritetiniai) punktai,
+// grupuoti taip pat, kaip darbalaukio šoniniame meniu, kad struktūra būtų
+// pažįstama. Pasirinkus punktą, lapas užsidaro automatiškai (onClick prie
+// kiekvienos NavLink).
+function MoreMenuSheet({ groups, onClose }) {
+  return (
+    <div
+      className="fixed inset-0 z-30 flex items-end justify-center bg-ink-950/50 lg:hidden"
+      onClick={onClose}
+    >
+      <div
+        className="max-h-[75vh] w-full overflow-y-auto rounded-t-2xl bg-white p-4 shadow-panel"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="mb-3 flex items-center justify-between px-1">
+          <h2 className="text-base font-bold text-ink-900">Daugiau</h2>
+          <button type="button" onClick={onClose} className="rounded-lg p-1.5 hover:bg-ink-900/5" aria-label="Uždaryti">
+            <X size={18} />
+          </button>
+        </div>
+        <div className="space-y-4 pb-[env(safe-area-inset-bottom)]">
+          {groups.map((group) => (
+            <div key={group.label}>
+              <p className="mb-1.5 px-2 text-xs font-semibold uppercase tracking-wide text-ink-600/50">{group.label}</p>
+              <div className="flex flex-col gap-1">
+                {group.items.map((item) => {
+                  const Icon = item.icon;
+                  return (
+                    <NavLink
+                      key={item.to}
+                      to={item.to}
+                      end={item.end}
+                      onClick={onClose}
+                      className={({ isActive }) =>
+                        `flex items-center gap-3 rounded-xl px-3.5 py-2.5 text-sm font-medium transition ${
+                          isActive ? "bg-ink-900/5 text-ink-900" : "text-ink-700 hover:bg-ink-900/5"
+                        }`
+                      }
+                    >
+                      <Icon size={18} strokeWidth={2.2} />
+                      {item.label}
+                    </NavLink>
+                  );
+                })}
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function Layout() {
-  const { user, profile, isAdmin, signOut, hasPermission } = useAuth();
+  const { user, profile, isAdmin, signOut, hasPermission, hasDevicePermission } = useAuth();
   const canSeeWriteoffs = hasPermission("delete");
+  const canImportDevices = hasDevicePermission("import");
+  const canSeeDeviceWriteoffs = hasDevicePermission("delete");
+  const canSeeDevicePickups = hasDevicePermission("edit");
+
+  const canSeeStats = canSeeWriteoffs || canSeeDeviceWriteoffs;
 
   const navGroups = useMemo(() => {
-    const extra = [];
-    if (canSeeWriteoffs) extra.push({ to: "/priedai/nurasymai", label: "Nurašymai", icon: PackageMinus });
-    if (canSeeWriteoffs) extra.push({ to: "/priedai/statistika", label: "Statistika", icon: BarChart3 });
+    // "Prietaisai", kaip ir "Priedai", peržiūra dabar VIEŠA — nuoroda visada
+    // statiniame BASE_NAV_GROUPS; tik "Importas"/"Nurašymai" pounoroda lieka
+    // pagal atitinkamą teisę (import/delete).
+    let groups = BASE_NAV_GROUPS.map((g) => {
+      if (g.label === "Priedų sandėlis" && canSeeWriteoffs) {
+        return { ...g, items: [...g.items, { to: "/priedai/nurasymai", label: "Nurašymai", icon: PackageMinus }] };
+      }
+      if (g.label === "Prietaisų sandėlis") {
+        const extra = [];
+        if (canImportDevices) extra.push({ to: "/prietaisai/importas", label: "Importas", icon: FileUp });
+        if (canSeeDevicePickups) extra.push({ to: "/prietaisai/atsinesimai", label: "Atsinešimai", icon: ClipboardList });
+        if (canSeeDeviceWriteoffs) extra.push({ to: "/prietaisai/nurasymai", label: "Nurašymai", icon: PackageMinus });
+        return extra.length ? { ...g, items: [...g.items, ...extra] } : g;
+      }
+      return g;
+    });
 
-    const groups = extra.length
-      ? BASE_NAV_GROUPS.map((g) =>
-          g.label === "Priedų sandėlis" ? { ...g, items: [...g.items, ...extra] } : g
-        )
-      : BASE_NAV_GROUPS;
+    // Vienas bendras statistikos puslapis visam projektui (priedai + prietaisai,
+    // perjungiama pačiame Stats.jsx) — sąmoningai atskira grupė meniu apačioje,
+    // prieš "Admin", ne įterpta į konkretaus modulio grupę.
+    if (canSeeStats) {
+      groups = [...groups, { label: "Statistika", items: [{ to: "/statistika", label: "Statistika", icon: BarChart3 }] }];
+    }
 
     if (!isAdmin) return groups;
     return [...groups, { label: "Admin", items: [{ to: "/priedai/vartotojai", label: "Vartotojai", icon: Users }] }];
-  }, [isAdmin, canSeeWriteoffs]);
+  }, [isAdmin, canSeeWriteoffs, canImportDevices, canSeeDevicePickups, canSeeDeviceWriteoffs, canSeeStats]);
 
   return (
     <div className="flex min-h-screen flex-col bg-paper">

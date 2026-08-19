@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { Search, Loader2, ChevronLeft, ChevronRight, PackageMinus, Download, AlertCircle, X } from "lucide-react";
 import { supabase } from "../lib/supabaseClient";
-import { exportPartsWriteoffsToExcel } from "../lib/exportExcel";
+import { exportDeviceWriteoffsToExcel } from "../lib/exportExcel";
 
 // Apsaugo nuo netyčinio ILIKE wildcard elgesio, jei paieškos tekste yra % arba _.
 function escapeLike(str) {
@@ -15,7 +15,7 @@ function formatDate(ts) {
 }
 
 const PAGE_SIZE_OPTIONS = [10, 25, 50, 100];
-const REASON_LABELS = { parduota: "Parduota", remontui: "Panaudota remontui", kita: "Kita" };
+const REASON_LABELS = { parduota: "Parduota", remontui: "Panaudota remontui", garantija: "Garantinis pakeitimas", kita: "Kita" };
 const SEARCH_DEBOUNCE_MS = 300;
 
 function writeoffDetail(w) {
@@ -24,9 +24,9 @@ function writeoffDetail(w) {
   return w.reason || "—";
 }
 
-export default function PartsWriteoffs() {
+export default function DeviceWriteoffs() {
   // Pradinis priežasties filtras gali ateiti iš URL (žr. /statistika
-  // nurašymų plytelių nuorodas — pvz. "?priezastis=parduota") — skaitoma
+  // nurašymų plytelių nuorodas — pvz. "?priezastis=garantija") — skaitoma
   // TIK vieną kartą (lazy init), toliau valdoma įprastai per UI.
   const [searchParams] = useSearchParams();
   const [writeoffs, setWriteoffs] = useState([]);
@@ -49,23 +49,22 @@ export default function PartsWriteoffs() {
     return () => clearTimeout(t);
   }, [search]);
 
-  // "parts!inner" — priedo pavadinimas/kodas paieškai; saugu naudoti inner
-  // join, nes parts SELECT dabar viešas visiems (žr. migrate_parts_public_view.sql),
-  // tad joks parts_writeoffs įrašas nebus "prarastas" dėl RLS. "profiles" TYČIA
-  // paliktas be "!inner" (paprastas left join) — profiles RLS leidžia matyti
-  // tik savo arba (adminui) visų vartotojų username, tad su inner join
-  // write-off'ai, kuriuos padarė kiti vartotojai, tiesiog dingtų iš sąrašo
-  // ne-adminui. Dėl to paieška apima tik priedo pavadinimą/kodą, ne vartotoją.
+  // "device_name"/"device_ian" yra denormalizuoti stulpeliai device_writeoffs
+  // lentelėje (kopija nurašymo metu, žr. migrate_add_device_writeoffs.sql) —
+  // NE JOIN su devices. Tai reiškia, kad šiam puslapiui pakanka VIEN
+  // 'delete' teisės (RLS select politika device_writeoffs lentelei), o
+  // devices atskiros 'view' teisės nereikia; įrašai taip pat neišnyksta
+  // ištrynus patį prietaisą (device_id tampa NULL, bet vardas/IAN išlieka).
   function buildQuery(opts = {}) {
-    let query = supabase.from("parts_writeoffs").select(
-      "id, quantity, reason_type, price, rma, reason, created_at, undone_at, parts!inner(name, part_code, location), profiles!user_id(username)",
+    let query = supabase.from("device_writeoffs").select(
+      "id, location, quantity, reason_type, price, rma, reason, created_at, undone_at, device_name, device_ian, profiles!user_id(username)",
       opts.count ? { count: opts.count } : undefined
     );
 
     const tokens = debouncedSearch.trim().toLowerCase().split(/\s+/).filter(Boolean);
     tokens.forEach((token) => {
       const q = escapeLike(token);
-      query = query.or(`name.ilike.%${q}%,part_code.ilike.%${q}%`, { referencedTable: "parts" });
+      query = query.or(`device_name.ilike.%${q}%,device_ian.ilike.%${q}%`);
     });
 
     if (reasonFilter !== "all") query = query.eq("reason_type", reasonFilter);
@@ -89,8 +88,7 @@ export default function PartsWriteoffs() {
   });
 
   // Filtro pasikeitimas turi grąžinti į 1 puslapį PRIEŠ pakraunant — abu
-  // veiksmai sujungti į vieną efektą (žr. tą patį komentarą Parts.jsx),
-  // kad load() nesuveiktų su dar pasenusia "page" reikšme.
+  // veiksmai sujungti į vieną efektą (žr. tą patį komentarą Parts.jsx).
   const filterKey = `${debouncedSearch}|${reasonFilter}|${pageSize}`;
   const prevFilterKey = useRef(filterKey);
   useEffect(() => {
@@ -107,8 +105,8 @@ export default function PartsWriteoffs() {
 
   useEffect(() => {
     const channel = supabase
-      .channel("parts-writeoffs-realtime")
-      .on("postgres_changes", { event: "*", schema: "public", table: "parts_writeoffs" }, () => loadRef.current())
+      .channel("device-writeoffs-realtime")
+      .on("postgres_changes", { event: "*", schema: "public", table: "device_writeoffs" }, () => loadRef.current())
       .subscribe();
     return () => supabase.removeChannel(channel);
   }, []);
@@ -123,7 +121,7 @@ export default function PartsWriteoffs() {
   async function handleUndo(writeoff) {
     if (!confirm(`Ar tikrai norite atšaukti šį nurašymą? ${writeoff.quantity} vnt. bus grąžinta į likutį.`)) return;
     setUndoingId(writeoff.id);
-    const { error } = await supabase.rpc("undo_writeoff", { p_writeoff_id: writeoff.id });
+    const { error } = await supabase.rpc("undo_device_writeoff", { p_writeoff_id: writeoff.id });
     setUndoingId(null);
     if (error) {
       setActionError(`Nepavyko atšaukti nurašymo: ${error.message}`);
@@ -135,15 +133,15 @@ export default function PartsWriteoffs() {
   async function handleExport() {
     setExporting(true);
     const { data } = await buildQuery();
-    await exportPartsWriteoffsToExcel(data || [], `Nurasymai-${new Date().toISOString().slice(0, 10)}.xlsx`);
+    await exportDeviceWriteoffsToExcel(data || [], `Prietaisu-nurasymai-${new Date().toISOString().slice(0, 10)}.xlsx`);
     setExporting(false);
   }
 
   return (
     <div className="space-y-5">
       <div>
-        <h1 className="text-xl font-bold text-ink-900 lg:text-2xl">Nurašymai</h1>
-        <p className="mt-1 text-sm text-ink-600/70">Visų nurašytų priedų istorija.</p>
+        <h1 className="text-xl font-bold text-ink-900 lg:text-2xl">Prietaisų nurašymai</h1>
+        <p className="mt-1 text-sm text-ink-600/70">Visų nurašytų prietaisų istorija.</p>
       </div>
 
       {actionError && (
@@ -167,7 +165,7 @@ export default function PartsWriteoffs() {
           <input
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            placeholder="Ieškoti pagal priedo pavadinimą arba kodą…"
+            placeholder="Ieškoti pagal prietaiso pavadinimą arba IAN…"
             autoComplete="off"
             className="input-field pl-10"
           />
@@ -228,8 +226,9 @@ export default function PartsWriteoffs() {
               <thead className="border-b border-ink-900/5 bg-ink-900/[0.02] text-xs uppercase tracking-wide text-ink-600/60">
                 <tr>
                   <th className="px-3 py-2.5 font-semibold">Data</th>
-                  <th className="px-3 py-2.5 font-semibold">Priedas</th>
-                  <th className="px-3 py-2.5 font-semibold">Kodas</th>
+                  <th className="px-3 py-2.5 font-semibold">Prietaisas</th>
+                  <th className="px-3 py-2.5 font-semibold">IAN</th>
+                  <th className="px-3 py-2.5 font-semibold">Lokacija</th>
                   <th className="px-3 py-2.5 font-semibold">Kiekis</th>
                   <th className="px-3 py-2.5 font-semibold">Priežastis</th>
                   <th className="px-3 py-2.5 font-semibold">Detalė</th>
@@ -241,8 +240,9 @@ export default function PartsWriteoffs() {
                 {writeoffs.map((w) => (
                   <tr key={w.id} className={`hover:bg-ink-900/[0.015] ${w.undone_at ? "text-ink-600/40 line-through" : ""}`}>
                     <td className="px-3 py-2.5 text-ink-600/70">{formatDate(w.created_at)}</td>
-                    <td className="max-w-[180px] truncate px-3 py-2.5 text-ink-800">{w.parts?.name || "—"}</td>
-                    <td className="max-w-[110px] truncate px-3 py-2.5 font-mono text-ink-900">{w.parts?.part_code || "—"}</td>
+                    <td className="max-w-[180px] truncate px-3 py-2.5 text-ink-800">{w.device_name || "—"}</td>
+                    <td className="max-w-[120px] truncate px-3 py-2.5 font-mono text-ink-900">{w.device_ian || "—"}</td>
+                    <td className="px-3 py-2.5 text-ink-800">{w.location || "—"}</td>
                     <td className="px-3 py-2.5 font-semibold text-ink-800">-{w.quantity}</td>
                     <td className="px-3 py-2.5 text-ink-800">{REASON_LABELS[w.reason_type] || w.reason_type}</td>
                     <td className="max-w-[160px] truncate px-3 py-2.5 text-ink-600/70">{writeoffDetail(w)}</td>

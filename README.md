@@ -34,7 +34,12 @@ warehouse-app/
 │       add_parts, add_parts_notes, add_parts_permissions,
 │       fix_import_parts_delete_permission, admin_reset_require_admin,
 │       add_parts_writeoffs, parts_public_view, parts_writeoffs_reason_type,
-│       parts_min_quantity, writeoff_undo
+│       parts_min_quantity, writeoff_undo, add_pallet_permissions,
+│       add_catalog_permission, add_devices, devices_notes, add_device_writeoffs,
+│       fix_device_totals_security_invoker, fix_import_devices_coalesce,
+│       fix_device_writeoffs_denormalize, devices_public_view,
+│       add_device_pickups, fix_device_pickups_two_step,
+│       add_device_pickup_unpick, add_device_min_quantity
 │       (žr. 2 skyrių)
 └── src/
     ├── main.jsx
@@ -50,7 +55,8 @@ warehouse-app/
     │   ├── excelHeaders.js         ← Excel stulpelių antraščių atspėjimas importuojant
     │   ├── readSpreadsheet.js      ← Excel (.xlsx, per ExcelJS) arba CSV (savas parseris) skaitymas į eilučių masyvą, naudojamas importo puslapiuose
     │   ├── exportExcel.js          ← Excel eksportas (paletės, siuntos, priedai, priedų nurašymai)
-    │   └── printLabel.js           ← paletės etikečių spausdinimas
+    │   ├── printLabel.js           ← paletės etikečių spausdinimas
+    │   └── readTransferPdf.js      ← vidinės sistemos "Internal transfer" PDF nuskaitymas naršyklėje (pdfjs-dist, lazy-load), naudojamas /prietaisai/atsinesimai PDF importe
     ├── components/
     │   ├── Layout.jsx               ← viršutinė juosta (prisijungimas/atsijungimas) + šoninė/apatinė navigacija (grupuota pagal modulį)
     │   ├── RequirePermission.jsx    ← route guard: reikalauja prisijungimo (rodo `InlineLoginForm` tame pačiame puslapyje), o su `permission` — ir konkrečios teisės
@@ -66,13 +72,17 @@ warehouse-app/
         ├── Parts.jsx                 ← "/priedai" — priedų sąrašas, paieška, Excel eksportas (peržiūra dabar vieša, be prisijungimo); su "edit"/"delete" teise — redagavimas ir priedo nurašymas (`writeoff_part` RPC)
         ├── PartsImport.jsx           ← "/priedai/importas" — priedų importas iš Excel/CSV (reikia "import" teisės)
         ├── PartsWriteoffs.jsx        ← "/priedai/nurasymai" — visų priedų nurašymų istorija, paieška/filtras pagal priežastį, atšaukimas, Excel eksportas (reikia "delete" teisės)
-        ├── PartsStats.jsx            ← "/priedai/statistika" — sandėlio ir nurašymų apžvalga (stat kortelės, TOP 5 nurašomi priedai), realaus laiko atnaujinimas (reikia "delete" teisės)
         ├── PartsUsers.jsx            ← "/priedai/vartotojai" — vartotojų kūrimas ir teisių valdymas (reikia "admin" teisės)
         ├── CatalogImport.jsx         ← "/katalogas" — admin: katalogo (IAN → pavadinimas/gamintojas/tipas) importas iš Excel/CSV
-        └── AdminReset.jsx            ← "/admin-reset" — admin: visų testavimo duomenų išvalymas (reikia "admin" teisės)
+        ├── AdminReset.jsx            ← "/admin-reset" — admin: visų testavimo duomenų išvalymas (reikia "admin" teisės)
+        ├── Devices.jsx               ← "/prietaisai" — prietaisų sąrašas su lokacijų išskleidimu, paieška, Excel eksportas (peržiūra vieša, be prisijungimo); su "delete" teise — trys veiksmų mygtukai (Redaguoti/Nurašyti/Ištrinti, `writeoff_device` RPC) ir istorija išskleistoje eilutėje; su "edit" teise — mygtukas „Atsinešti" TIESIOG PAGRINDINĖJE lentelės eilutėje (be išskleidimo), pridedantis punktą į `device_pickups`
+        ├── DevicesImport.jsx         ← "/prietaisai/importas" — prietaisų importas iš Excel/CSV (reikia "import" teisės)
+        ├── DeviceWriteoffs.jsx       ← "/prietaisai/nurasymai" — visų prietaisų nurašymų istorija, paieška/filtras pagal priežastį, atšaukimas, Excel eksportas (reikia "delete" teisės)
+        ├── DevicePickups.jsx         ← "/prietaisai/atsinesimai" — garantinio serviso atsinešimų sąrašo peržiūra (laukia/paimta/nurašyta) ir valdymas (punktai PRIDEDAMI iš Devices.jsx, ne čia); pridėti/trinti/žymėti "paimta" — "edit" teisė, "Nurašyti" (kiekio atėmimas) — papildomai "delete" teisė
+        └── Stats.jsx                 ← "/statistika" — VIENAS bendras statistikos puslapis visam projektui; viduje perjungiama Priedai/Prietaisai (rodomi tik moduliai, kuriuos vartotojas realiai mato), sandėlio ir nurašymų apžvalga, realaus laiko atnaujinimas
 ```
 
-Puslapis `/katalogas` yra administracinis — pasiekiamas tik tiesioginiu adresu, be nuorodos navigacijos meniu. `/priedai/importas`, `/priedai/nurasymai`, `/priedai/vartotojai`, `/admin-reset` apsaugoti `RequirePermission` komponentu (žr. žemiau) — be prisijungimo rodoma prisijungimo forma tame pačiame puslapyje (`InlineLoginForm`, ne atskiras `/login` maršrutas), o be reikiamos teisės parodomas pranešimas apie teisių trūkumą. `/priedai` sąrašo peržiūra yra vieša (žr. `migrate_parts_public_view.sql`) — redagavimas/trynimas/nurašymas gated pačiame `Parts.jsx` puslapyje pagal turimą teisę.
+Puslapis `/katalogas` yra administracinis — pasiekiamas tik tiesioginiu adresu, be nuorodos navigacijos meniu. `/priedai/importas`, `/priedai/nurasymai`, `/priedai/vartotojai`, `/admin-reset`, `/prietaisai/importas`, `/prietaisai/nurasymai` apsaugoti `RequirePermission` komponentu (žr. žemiau) — be prisijungimo rodoma prisijungimo forma tame pačiame puslapyje (`InlineLoginForm`, ne atskiras `/login` maršrutas), o be reikiamos teisės parodomas pranešimas apie teisių trūkumą. **Ir `/priedai`, IR `/prietaisai` sąrašo peržiūra yra vieša** (žr. `migrate_parts_public_view.sql` / `migrate_devices_public_view.sql`) — redagavimas/trynimas/nurašymas gated pačiame `Parts.jsx`/`Devices.jsx` puslapyje pagal turimą teisę; neprisijungusiam vartotojui abiejuose rodoma ta pati „Peržiūros režimas“ juosta.
 
 ### Priedų modulio prisijungimas ir teisės
 
@@ -228,6 +238,89 @@ Nurašoma per `writeoff_part(part_id, quantity, reason_type, price, rma, reason)
 
 Nurašymą galima atšaukti per `undo_writeoff(writeoff_id)` RPC funkciją (`SECURITY DEFINER`, taip pat reikalauja `delete` teisės) — grąžina kiekį atgal į `parts.quantity` ir pažymi įrašą kaip atšauktą (`undone_at`/`undone_by`); pats įrašas netrinamas, kad liktų audito pėdsakas, ir atšaukti galima tik kartą. Atšaukimo mygtukas matomas tiek `/priedai/nurasymai`, tiek priedo išskleistoje istorijoje `/priedai` puslapyje.
 
+### Prietaisų (įrangos) modulio lentelės
+
+Nepriklausomos nuo pagrindinio srauto IR nuo priedų (`parts`) modulio — savo teisės (`device_permissions`). Peržiūra (SELECT) vieša, kaip ir visuose kituose moduliuose (žr. `migrate_devices_public_view.sql`) — redagavimas/trynimas/nurašymas/importas ir toliau reikalauja atitinkamos teisės. Duomenys normalizuoti į dvi lenteles, nes tas pats IAN gali pasikartoti keliose Excel eilutėse (skiriasi tik kiekis/lokacija).
+
+#### Lentelė `devices` (unikalus prietaiso modelis)
+
+| Stulpelis      | Tipas        | Paskirtis                                                     |
+|-----------------|--------------|-----------------------------------------------------------------|
+| `id`            | uuid (PK)    | Unikalus identifikatorius                                       |
+| `ian`           | text, unique | IAN kodas — identifikuoja MODELĮ, ne fizinį vienetą               |
+| `name`          | text         | Prietaiso pavadinimas                                             |
+| `manufacturer`  | text         | Gamintojas (šiuo metu: Grizzly, Kompernass — laisvas tekstas)     |
+| `notes`         | text         | Komentaras — VIENAS visam prietaisui (žr. `migrate_devices_notes.sql`), NE per lokaciją |
+| `min_quantity`  | integer      | Individualus mažo likučio slenkstis BENDRAM kiekiui (žr. `migrate_add_device_min_quantity.sql`); `NULL` = numatyta reikšmė (3) |
+| `created_at`/`updated_at` | timestamptz | Sukūrimo/atnaujinimo laikas                             |
+
+#### Lentelė `device_stock` (kiekis konkrečioje lokacijoje)
+
+| Stulpelis    | Tipas       | Paskirtis                                                          |
+|--------------|-------------|-----------------------------------------------------------------------|
+| `id`         | uuid (PK)   | Unikalus identifikatorius                                             |
+| `device_id`  | uuid (FK)   | Nuoroda į `devices.id` (`on delete cascade`)                          |
+| `location`   | text        | Lokacija sandėlyje; kartu su `device_id` — UNIQUE (pakartotinis importas atnaujina, ne dubliuoja) |
+| `quantity`   | integer     | Kiekis toje lokacijoje                                                |
+| `notes`      | text        | NEBENAUDOJAMAS front-end pusėje nuo `migrate_devices_notes.sql` — komentaras dabar `devices.notes` |
+| `created_at`/`updated_at` | timestamptz | Sukūrimo/atnaujinimo laikas                                |
+
+Bendram kiekiui per visas lokacijas naudojamas `device_totals` VIEW (grupuoja `device_stock` pagal `device_id`, sumuoja `quantity`) su **`security_invoker = true`** — BE ŠIOS PARINKTIES view vykdytų RLS view savininko (Supabase atveju „postgres“, kuris turi BYPASSRLS) teisėmis ir visiškai apeitų `devices`/`device_stock` RLS, atskleisdamas visų prietaisų duomenis bet kuriam prisijungusiam vartotojui nepriklausomai nuo `view` teisės. Su `security_invoker = true` view vykdomas UŽKLAUSĖJO teisėmis, todėl realiai paveldi tų pačių lentelių RLS. Šis pats VIEW taip pat skaičiuoja **`stock_level`** (`out`/`low`/`ok`, pagal `total_quantity` vs `min_quantity` arba numatytą 3) — ta pati logika, kaip `parts.stock_level`, bet SKAIČIUOJAMA VIEW viduje (ne `generated always as` stulpelyje pačioje `devices` lentelėje), nes kiekis yra kitoje (`device_stock`) lentelėje. `/prietaisai` sąrašo eilutės nudažomos pagal šią būseną (raudona = baigėsi, gintarinė = mažas likutis) — ta pati vizualinė kalba, kaip `/priedai`.
+
+Importuojama per `import_devices(rows, p_clear_existing)` RPC funkciją (`SECURITY DEFINER`, reikalauja `import` teisės): kiekvienai eilutei upsert į `devices` pagal `ian` (pavadinimas/gamintojas/komentaras atnaujinami naujausia reikšme, bet TIK jei Excel eilutėje laukas neTUŠČIAS — `coalesce(excluded.x, devices.x)` — kad pakartotinis importas su tuščiu langeliu neišvalytų jau turimos reikšmės), tada upsert į `device_stock` pagal `(device_id, location)` (kiekis perrašomas). Eilutės be IAN praleidžiamos. `p_clear_existing=true` papildomai reikalauja `delete` teisės.
+
+#### Lentelė `device_permissions` (vartotojas × teisė)
+
+Tos pačios keturios teisės kaip `parts` modulyje (`view`, `edit`, `delete`, `import`), bet **atskira** lentelė nuo `user_permissions` — priskyrimas vienam moduliui neturi jokios įtakos kitam. Naudoja bendrą `is_admin()` kaip super-adminą. `view` teisė NEBEriboja SELECT (nuo `migrate_devices_public_view.sql` — kaip ir `parts`/`pallets`, peržiūra vieša); ji lieka `DEVICE_PERMISSIONS` sąraše dėl suderinamumo ir naudojama tik kaip papildomas app-lygio vartų raktas `/statistika` prietaisų skirtukui (žr. `Stats.jsx`).
+
+#### Lentelė `device_writeoffs` (prietaisų nurašymų istorija)
+
+| Stulpelis     | Tipas       | Paskirtis                                                              |
+|---------------|-------------|--------------------------------------------------------------------------|
+| `id`          | uuid (PK)   | Unikalus identifikatorius                                                |
+| `device_id`   | uuid (FK)   | Nuoroda į `devices.id` (`on delete SET NULL`, ne cascade — žr. paaiškinimą žemiau) |
+| `device_name` | text        | Prietaiso pavadinimas — LAISVAS TEKSTAS (kopija nurašymo metu, NE FK), kad išliktų net ištrynus patį prietaisą |
+| `device_ian`  | text        | Prietaiso IAN — ta pati logika kaip `device_name`                        |
+| `location`    | text        | Lokacija, iš kurios nurašyta — LAISVAS TEKSTAS (kopija nurašymo metu, NE FK į `device_stock`), kad audito įrašas išliktų net ištrynus tos lokacijos likutį |
+| `user_id`     | uuid (FK)   | Nurašiusio vartotojo nuoroda į `profiles.id` (`on delete set null`)      |
+| `quantity`    | integer     | Nurašytas kiekis (> 0)                                                   |
+| `reason_type` | text        | Priežastis: `parduota` / `remontui` / `garantija` / `kita`               |
+| `price`       | numeric     | Kaina, jei `reason_type = 'parduota'`                                    |
+| `rma`         | text        | RMA numeris, jei `reason_type = 'remontui'`                              |
+| `reason`      | text        | Laisvas tekstas — PRIVALOMAS jei `reason_type = 'kita'`, NEBŪTINAS jei `reason_type = 'garantija'` |
+| `created_at`  | timestamptz | Nurašymo laikas                                                          |
+| `undone_at`   | timestamptz | Atšaukimo laikas, jei nurašymas atšauktas (`NULL` = aktyvus)              |
+| `undone_by`   | uuid (FK)   | Atšaukusio vartotojo nuoroda į `profiles.id` (`on delete set null`)      |
+
+Skirtingai nuo `parts_writeoffs` (kur kiekis yra vienas `part.quantity` laukas), prietaiso kiekis yra PER LOKACIJĄ (`device_stock`), todėl nurašoma per `writeoff_device(device_id, location, quantity, reason_type, price, rma, reason)` RPC funkciją (`SECURITY DEFINER`, reikalauja `delete` teisės) — sumažina KONKREČIOS lokacijos `device_stock.quantity`, nuskaito `devices.name`/`ian` ir įrašo audito eilutę kartu su jais (denormalizuoti); ta pati validacija kaip `writeoff_part` (likutis, privalomas laukas pagal priežastį), IŠSKYRUS `garantija` — jai papildomas laukas nereikalingas (žr. `migrate_add_device_pickups.sql`). Atšaukiama per `undo_device_writeoff(writeoff_id)` — grąžina kiekį atgal į `device_stock` (jei ta lokacijos eilutė tarpu buvo ištrinta, sukuriama iš naujo per upsert) ir žymi `undone_at`/`undone_by`; jei pats prietaisas tarpu ištrintas (`device_id` jau `NULL`), atšaukti nebegalima — funkcija apie tai aiškiai praneša. Pats įrašas netrinamas, atšaukti galima tik kartą. Istorija matoma `/prietaisai/nurasymai` puslapyje ir prie kiekvieno prietaiso `/prietaisai` sąraše.
+
+#### Lentelė `device_pickups` (atsinešimų sąrašas — garantinis servisas)
+
+Garantinio serviso srautui: klientas atsiunčia sugedusį prietaisą, reikia rasti IR atsinešti iš sandėlio TO PATIES PAVADINIMO pakaitinį (IAN dažniausiai skiriasi — tai kitas fizinis vienetas). Šis sąrašas pakeičia buvusį rankinį sekimą Google Sheets ("ką atsinešti") IR Excel (nurašymo žurnalas).
+
+| Stulpelis         | Tipas       | Paskirtis                                                          |
+|--------------------|-------------|-------------------------------------------------------------------|
+| `id`               | uuid (PK)   | Unikalus identifikatorius                                          |
+| `device_id`        | uuid (FK)   | Nuoroda į `devices.id` (`on delete cascade`)                       |
+| `quantity`         | integer     | Reikalingas kiekis (> 0)                                           |
+| `note`             | text        | Nebūtina pastaba (pvz. kliento grąžinto prietaiso IAN ar užsakymo Nr.) |
+| `user_id`          | uuid (FK)   | Punktą pridėjusio vartotojo nuoroda (`on delete set null`)         |
+| `created_at`       | timestamptz | Pridėjimo laikas                                                    |
+| `picked_at`        | timestamptz | Paėmimo laikas (`NULL` = dar laukia) — ta pati "timestamptz kaip būsena" logika, kaip `packed_at`/`undone_at` kitur schemoje |
+| `picked_by`        | uuid (FK)   | Paėmusio vartotojo nuoroda (`on delete set null`)                  |
+| `picked_location`  | text        | Lokacija, iš kurios faktiškai paimta                                |
+| `writeoff_id`      | uuid (FK)   | Nuoroda į `device_writeoffs.id` (`on delete set null`) — `NULL` = dar nenurašyta, užpildyta = nurašyta |
+
+TRYS atskiri žingsniai/būsenos — SĄMONINGAI atskirti, nes fizinis daikto paėmimas iš lentynos ir jo nurašymas iš apskaitos NĖRA tas pats momentas:
+
+1. **Laukia** (`picked_at is null`) — punktą prideda/trina tiesiogiai per `insert`/`delete` (RLS, reikalauja `edit` teisės); trinti galima TIK šioje būsenoje.
+2. **Paimta** (`picked_at is not null`, `writeoff_id is null`) — žymima per `mark_device_picked(pickup_id, location)` RPC (`SECURITY DEFINER`, reikalauja `edit` teisės; `picked_by`/`picked_at` nustatomi SERVERIO pusėje, ne kliento siunčiamais laukais). `device_stock` DAR NEKEIČIAMAS. Kol punktas dar NENURAŠYTAS, jį galima grąžinti atgal į „Laukia" per `unpick_device_pickup(pickup_id)` RPC (`SECURITY DEFINER`, reikalauja `edit` teisės; mygtukas „Atgal" prie punkto) — išvalo `picked_at`/`picked_by`/`picked_location`, naudinga jei paspausta per klaidą arba pasirinkta ne ta lokacija.
+3. **Nurašyta** (`writeoff_id is not null`) — TIK dabar, paspaudus „Nurašyti", per `finalize_device_pickup(pickup_id)` RPC (`SECURITY DEFINER`, reikalauja `delete` teisės) — ji naudoja jau užfiksuotą lokaciją/kiekį/pastabą ir iškviečia `writeoff_device(..., reason_type='garantija', reason=note)`, kuris dabar GRĄŽINA sukurto įrašo `id` (susiejamas su `writeoff_id`). Jei toks nurašymas atšaukiamas (`undo_device_writeoff`), punktas automatiškai grįžta į „Paimta" būseną (`writeoff_id` išvalomas) — iš čia jį irgi galima grąžinti į „Laukia" per `unpick_device_pickup`.
+
+Sąrašas matomas `/prietaisai/atsinesimai` puslapyje.
+
+**Kodėl `device_id` yra `on delete set null`, o ne `cascade`:** priešingai nei pirminiame projekte, ištrynus patį prietaisą (`/prietaisai` → „Ištrinti prietaisą“), jo nurašymų audito istorija TURI IŠLIKTI (ta pati filosofija, kaip `parts_writeoffs` niekada netrina savo įrašų) — `device_name`/`device_ian` denormalizavimas tai užtikrina. Tas pats denormalizavimas taip pat leidžia `/prietaisai/nurasymai` puslapiui veikti vien su `delete` teise, be JOIN į `devices` (kuriam RLS reikalautų atskiros `view` teisės).
+
 ### Kaip įdiegti
 
 1. Supabase projekto skydelyje eikite į **SQL Editor**.
@@ -236,7 +329,7 @@ Nurašymą galima atšaukti per `undo_writeoff(writeoff_id)` RPC funkciją (`SEC
 4. Tai sukurs lenteles, indeksus, RLS (Row Level Security) taisykles ir įjungs Realtime `items`/`pallets`/`shipments`/`parts` lentelėms.
 5. Sukurkite pirmą admin vartotoją priedų moduliui: `node scripts/bootstrap-admin.mjs` (žr. 3 skyrių dėl `SUPABASE_SERVICE_ROLE_KEY`).
 
-> **Apie RLS:** `items`, `pallets`, `catalog` numatytos prieigai per **authenticated** vartotojus. `shipments` leidžia prieigą ir `anon`, ir `authenticated` (nes siuntų formavimas veikia be prisijungimo ekrano). `parts` **peržiūra (select)** vieša `anon` ir `authenticated` (žr. `migrate_parts_public_view.sql`); jos insert/update/delete bei `parts_writeoffs`/`profiles`/`user_permissions` prieinamos tik `authenticated` vartotojams, papildomai apribotos pagal konkrečią teisę (`has_permission`). Jei pagrindinį srautą naudosite tik vidiniame tinkle be prisijungimo ekrano, pakeiskite likusias `to authenticated` į `to anon` schema faile — bet tuomet svarbu, kad programa nebūtų pasiekiama iš viešo interneto be papildomos apsaugos (pvz. VPN, IP apribojimas).
+> **Apie RLS:** `items`, `pallets`, `catalog` numatytos prieigai per **authenticated** vartotojus. `shipments` leidžia prieigą ir `anon`, ir `authenticated` (nes siuntų formavimas veikia be prisijungimo ekrano). `parts` IR `devices`/`device_stock` **peržiūra (select)** vieša `anon` ir `authenticated` (žr. `migrate_parts_public_view.sql` / `migrate_devices_public_view.sql`); jų insert/update/delete bei `parts_writeoffs`/`device_writeoffs`/`profiles`/`user_permissions`/`device_permissions` prieinamos tik `authenticated` vartotojams, papildomai apribotos pagal konkrečią teisę (`has_permission`/`has_device_permission`). Jei pagrindinį srautą naudosite tik vidiniame tinkle be prisijungimo ekrano, pakeiskite likusias `to authenticated` į `to anon` schema faile — bet tuomet svarbu, kad programa nebūtų pasiekiama iš viešo interneto be papildomos apsaugos (pvz. VPN, IP apribojimas).
 
 ## 3. Sujungimas su Supabase (.env kintamieji)
 
@@ -309,8 +402,27 @@ npm run preview    # patikrinti build'ą lokaliai
 - **Priedai (`/priedai`, peržiūra vieša visiems be prisijungimo)** — priedų sąrašas su paieška, filtrais (lokacija, mažas/nulinis likutis pagal `stock_level`), puslapiavimu; su „edit“ teise galima keisti kiekį/pastabas/individualų min. likučio slenkstį (`min_quantity`)/laukus ar pridėti naują įrašą tiesiogiai lentelėje, su „delete“ — trinti arba nurašyti priedą (kiekio dalį, nurodant priežastį: parduota/remontui/kita — įrašoma į `parts_writeoffs`) bei atšaukti bet kurį savo priedo aktyvų nurašymą tiesiog išskleistoje istorijoje; Excel eksportas.
 - **Priedų importas (`/priedai/importas`, reikia „import“ teisės)** — Excel (.xlsx) arba CSV įkėlimas (`readSpreadsheet.js`), stulpelių atspėjimas (`excelHeaders.js`), importas per `import_parts` RPC (visada `insert`, nes `part_code` nėra unikalus); pasirinktinai prieš importą išvalyti esamus įrašus (reikia papildomai „delete“ teisės).
 - **Nurašymai (`/priedai/nurasymai`, reikia „delete“ teisės)** — visų priedų nurašymų istorija (data, priedas, kiekis, priežastis, detalė, kas nurašė, būsena), paieška pagal priedo pavadinimą/kodą, filtras pagal priežastį, atšauktų nurašymų atšaukimas (`undo_writeoff` RPC — grąžina kiekį, žymi `undone_at`/`undone_by`, netrina audito įrašo), Excel eksportas (su „Būsena“ stulpeliu).
-- **Statistika (`/priedai/statistika`, reikia „delete“ teisės)** — sandėlio ir nurašymų apžvalga: stat kortelės (priedų įrašai, vienetai iš viso, mažo likučio/pasibaigę pagal `stock_level`), nurašymų suvestinė pasirinktu laikotarpiu (30 d./šie metai/visada) — iš viso nurašyta, parduota (€), remontui, kita — bei TOP 5 dažniausiai nurašomų priedų grafikas; skaičiuojama tik iš aktyvių (neatšauktų) nurašymų, atsinaujina realiu laiku per Supabase Realtime.
-- **Vartotojai (`/priedai/vartotojai`, reikia „admin“ teisės arba `is_admin`)** — naujo vartotojo (ID + slaptažodis) kūrimas per `api/create-user.js`, esamų vartotojų teisių (view/edit/delete/import) ir admin žymos perjungimas.
+- **Vartotojai (`/priedai/vartotojai`, reikia „admin“ teisės arba `is_admin`)** — naujo vartotojo (ID + slaptažodis) kūrimas per `api/create-user.js`, esamų vartotojų teisių (view/edit/delete/import) valdymas VISUOSE trijuose moduliuose (priedai/paletės/prietaisai, nepriklausomos viena nuo kitos) ir admin žymos perjungimas.
+
+### Prietaisų (įrangos) modulis
+
+Nepriklausomas nuo priedų (`parts`) modulio — savo teisės (`device_permissions`), naudoja tą patį prisijungimą (bendras `profiles`/ID+slaptažodis). **Peržiūra vieša** (kaip ir `/priedai`) — nuoroda navigacijos meniu rodoma visada, nepriklausomai nuo prisijungimo.
+
+- **Prietaisai (`/prietaisai`, peržiūra vieša visiems be prisijungimo)** — prietaisų (modelių, unikalių pagal IAN) sąrašas su paieška (pavadinimas/IAN/gamintojas), filtru pagal gamintoją IR filtru pagal likutį (Visi/Mažas likutis/Tik baigęsis — kadangi `devices` lentelė pati stock_level neturi, jis paskaičiuojamas per `device_totals`, tad filtras veikia dviem žingsniais: pirma surandami atitinkantys `id`, tada pagrindinė užklausa apribojama `.in()`); pagrindinėje lentelėje rodomas tik bendras kiekis (BE gamintojo stulpelio), lokacijos IR gamintojas matomi TIK išskleidus eilutę (paprastas tekstas „Lokacija X (Y vnt.)“ kiekvienai, be redagavimo). Eilutės nudažomos pagal `stock_level` (raudona = baigėsi, gintarinė = mažas likutis pagal `min_quantity` arba numatytą 3) — ta pati vizualinė kalba, kaip `/priedai`. Komentaras priklauso VISAM prietaisui (ne pavienei lokacijai) — su „edit“ teise redaguojamas kaip vienas laukas po lokacijų sąrašu; taip pat redaguoti paties prietaiso pavadinimą/IAN/gamintoją/min. likutį arba sukurti naują prietaisą. Su „delete“ teise — trys veiksmų mygtukai tokio pat dizaino kaip `/priedai`: **Redaguoti**, **Nurašyti** (modalas su lokacijos pasirinkimu, jei prietaisas turi kelias — nurašo dalį pasirinktos lokacijos kiekio, nurodant priežastį: parduota/remontui/garantija/kita — įrašoma į `device_writeoffs`, atšaukiama tiesiog išskleistoje istorijoje) ir **Ištrinti prietaisą** (su visais jo likučiais); pavienė lokacijos eilutė atskiro trynimo mygtuko nebeturi — likutis mažinamas tik per nurašymą arba viso prietaiso trynimą. Su „edit“ teise — TIESIOG PAGRINDINĖJE lentelės eilutėje (be išskleidimo) mažas mygtukas **„Atsinešti"**, atidarantis langelį (kiekis + nebūtina pastaba) ir pridedantis punktą į garantinio serviso atsinešimų sąrašą (`device_pickups`, žr. žemiau) — be poreikio dar kartą rinktis prietaisą, nes jis jau žinomas iš eilutės. Excel eksportas (kiekviena lokacija — sava eilutė, komentaras kartojasi kiekvienoje).
+- **Prietaisų importas (`/prietaisai/importas`, reikia „import“ teisės)** — Excel (.xlsx) arba CSV įkėlimas, stulpelių atspėjimas (Prietaisas/IAN/Kiekis/Lokacija/Komentaras/Gamintojas), importas per `import_devices` RPC — upsert pagal IAN į `devices` (pavadinimas/gamintojas/komentaras atnaujinami naujausia reikšme), tada upsert pagal (device_id, lokacija) į `device_stock` (kiekis perrašomas, ne dubliuojamas); pasirinktinai prieš importą išvalyti esamus duomenis (reikia papildomai „delete“ teisės).
+- **Prietaisų nurašymai (`/prietaisai/nurasymai`, reikia „delete“ teisės)** — visų prietaisų nurašymų istorija (data, prietaisas, IAN, lokacija, kiekis, priežastis, detalė, kas nurašė, būsena), paieška pagal prietaiso pavadinimą/IAN, filtras pagal priežastį, aktyvių nurašymų atšaukimas (`undo_device_writeoff` RPC), Excel eksportas.
+- **Atsinešimai (`/prietaisai/atsinesimai`, reikia „edit“ teisės; „Nurašyti“ — papildomai „delete“)** — garantinio serviso „ką atsinešti iš sandėlio" sąrašo peržiūra ir valdymas, dvi dalys: **Laukia** (punktai PRIDEDAMI iš `/prietaisai` sąrašo, ne šiame puslapyje — čia tik matomi: prietaisas, gamintojas, esamos lokacijos su kiekiais sandėlyje (padeda greitai susirasti), reikalingas kiekis, pastaba, data; filtras pagal gamintoją; galima ištrinti tik dar nepaimtą punktą) ir **Paimta** (paskutiniai 50, su Būsenos stulpeliu). Pažymėjus „Paimta" — pasirenki lokaciją, iš kurios faktiškai paėmei (`mark_device_picked` RPC) — TAI DAR NEKEIČIA `device_stock`; jei paspaudei per klaidą, mygtukas **„Atgal"** grąžina punktą į „Laukia" (`unpick_device_pickup` RPC), kol jis dar nenurašytas. Kiekis sumažinamas ir `device_writeoffs` audito įrašas (priežastis „Garantinis pakeitimas") sukuriamas TIK paspaudus atskirą mygtuką **„Nurašyti"** prie to paties punkto (`finalize_device_pickup` RPC) — du sąmoningai atskirti žingsniai, nes fizinis paėmimas ir apskaitos nurašymas realybėje įvyksta skirtingu metu. Virš sąrašo — **„Importas iš vidinės sistemos (PDF)"**: įkėlus vidinės (be API) sistemos „Internal transfer" PDF pažymą (nuskaitoma naršyklėje per `pdfjs-dist`, lazy-load'inama tik pareikalavus — žr. `src/lib/readTransferPdf.js`), kiekviena eilutė (pavadinimas, IAN, kiekis) susiejama su atitinkamu vienareikšmiu „Paimta, dar nenurašyta" punktu pagal IAN + kiekį; paspaudus „Vykdyti", automatiškai nurašomi TIK vienareikšmiai atitikmenys — visa kita (IAN nerastas / nerastas atitinkamas punktas / kiekis nesutampa / keli galimi punktai) tik pažymima peržiūrai, niekas automatiškai nekuriama ar spėjama. Pakeičia buvusį rankinį Google Sheets ("ką atsinešti") + Excel (nurašymo žurnalas) sekimą.
+
+### Statistika (bendra visam projektui)
+
+**Vienas** puslapis (`/statistika`, `src/pages/Stats.jsx`) abiem sandėlio moduliams — NE atskiras kiekvienam. Meniu nuoroda rodoma atskira grupe apačioje, prieš „Admin“, jei vartotojas turi bent vieno modulio „delete“ teisę (priedų `user_permissions` arba prietaisų `device_permissions`).
+
+- Viršuje — mygtukų pora **Priedai** / **Prietaisai**, perjungianti, kurio modulio statistika rodoma; jei vartotojas turi teisę tik į vieną modulį, perjungiklis nerodomas, iškart matomas tas vienas. Jei neturi nė vieno — rodomas „Neturite teisės“ pranešimas (kaip `RequirePermission`).
+- Bendras „Laikotarpis“ filtras (30 d./šie metai/visada) galioja abiem moduliams vienodai.
+- **Priedų** vaizdas — nepakitęs nuo ankstesnio `/priedai/statistika`: stat kortelės (priedų įrašai, vienetai iš viso, mažo likučio/pasibaigę pagal `stock_level`), nurašymų suvestinė (iš viso nurašyta, parduota €, remontui, kita) iš `parts_writeoffs`, TOP 5 dažniausiai nurašomų priedų.
+- **Prietaisų** vaizdas — analogiška struktūra, dabar IR su `stock_level`/`min_quantity` sąvoka (žr. `migrate_add_device_min_quantity.sql`): stat kortelės (prietaisų modelių, vienetų iš viso, mažo likučio, be likučio — abi paskutinės pagal `device_totals.stock_level`, lokacijų iš viso), ta pati nurašymų suvestinė iš `device_writeoffs` PAPILDYTA penkta plytele „Garantiniai pakeitimai" (`reason_type='garantija'`, žr. `/prietaisai/atsinesimai`), TOP 5 dažniausiai nurašomų prietaisų.
+- Abu vaizdai skaičiuoja tik iš AKTYVIŲ (neatšauktų) nurašymų ir atsinaujina realiu laiku per Supabase Realtime, kaip ir anksčiau.
+- **Plytelės — paspaudžiamos nuorodos, ne tik skaičiai.** Ten, kur prasminga (mažo likučio/pasibaigę, nurašymo priežastys, TOP 5 įrašai), plytelė nuveda į atitinkamą sąrašo puslapį su JAU PRITAIKYTU filtru per URL parametrus: `?likutis=low|out` (`/priedai`, `/prietaisai`), `?priezastis=<tipas>` (`/priedai/nurasymai`, `/prietaisai/nurasymai`), `?q=<pavadinimas>` (TOP 5 → paieška sąraše). Paskirties puslapiai šiuos parametrus perskaito TIK vieną kartą pradiniam būsenos užpildymui (`useSearchParams`, lazy `useState` init) — toliau filtrai valdomi įprastai per UI, URL vėliau nesinchronizuojamas atgal. Bendros sumos be prasmingo filtro (pvz. „Vienetų iš viso", „Lokacijų iš viso") lieka paprastos informacinės kortelės, ne nuorodos.
 
 ## 6. Tolimesni žingsniai (pasiūlymai)
 

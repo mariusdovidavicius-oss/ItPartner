@@ -11,18 +11,21 @@ export function AuthProvider({ children }) {
   const [profile, setProfile] = useState(null);
   const [permissions, setPermissions] = useState(new Set());
   const [palletPermissions, setPalletPermissions] = useState(new Set());
+  const [devicePermissions, setDevicePermissions] = useState(new Set());
   const [loadingProfile, setLoadingProfile] = useState(false);
 
   const loadProfile = useCallback(async (userId) => {
     setLoadingProfile(true);
-    const [{ data: profileRow }, { data: permRows }, { data: palletPermRows }] = await Promise.all([
+    const [{ data: profileRow }, { data: permRows }, { data: palletPermRows }, { data: devicePermRows }] = await Promise.all([
       supabase.from("profiles").select("id, username, is_admin").eq("id", userId).maybeSingle(),
       supabase.from("user_permissions").select("permission").eq("user_id", userId),
-      supabase.from("pallet_permissions").select("permission").eq("user_id", userId)
+      supabase.from("pallet_permissions").select("permission").eq("user_id", userId),
+      supabase.from("device_permissions").select("permission").eq("user_id", userId)
     ]);
     setProfile(profileRow || null);
     setPermissions(new Set((permRows || []).map((r) => r.permission)));
     setPalletPermissions(new Set((palletPermRows || []).map((r) => r.permission)));
+    setDevicePermissions(new Set((devicePermRows || []).map((r) => r.permission)));
     setLoadingProfile(false);
   }, []);
 
@@ -40,6 +43,7 @@ export function AuthProvider({ children }) {
         setProfile(null);
         setPermissions(new Set());
         setPalletPermissions(new Set());
+        setDevicePermissions(new Set());
       }
     });
 
@@ -66,15 +70,21 @@ export function AuthProvider({ children }) {
     return !!profile?.is_admin || palletPermissions.has(perm);
   }
 
+  function hasDevicePermission(perm) {
+    return !!profile?.is_admin || devicePermissions.has(perm);
+  }
+
   const value = {
     session,
     user: session?.user ?? null,
     profile,
     permissions,
     palletPermissions,
+    devicePermissions,
     isAdmin: !!profile?.is_admin,
     hasPermission,
     hasPalletPermission,
+    hasDevicePermission,
     loading: session === undefined || (!!session && loadingProfile && !profile),
     signInWithId,
     signOut
