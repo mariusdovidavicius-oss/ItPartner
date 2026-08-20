@@ -2,27 +2,12 @@ import { useEffect, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { Search, Loader2, ChevronLeft, ChevronRight, PackageMinus, Download, AlertCircle, X } from "lucide-react";
 import { supabase } from "../lib/supabaseClient";
-import { exportPartsWriteoffsToExcel } from "../lib/exportExcel";
-
-// Apsaugo nuo netyčinio ILIKE wildcard elgesio, jei paieškos tekste yra % arba _.
-function escapeLike(str) {
-  return str.replace(/[%_]/g, (c) => `\\${c}`);
-}
-
-function formatDate(ts) {
-  if (!ts) return "—";
-  return new Date(ts).toLocaleDateString("lt-LT");
-}
+import { escapeLike, formatDate } from "../lib/format";
+import { PART_WRITEOFF_REASONS, reasonLabelMap, writeoffDetail } from "../lib/writeoffReasons";
 
 const PAGE_SIZE_OPTIONS = [10, 25, 50, 100];
-const REASON_LABELS = { parduota: "Parduota", remontui: "Panaudota remontui", kita: "Kita" };
+const REASON_LABELS = reasonLabelMap(PART_WRITEOFF_REASONS);
 const SEARCH_DEBOUNCE_MS = 300;
-
-function writeoffDetail(w) {
-  if (w.reason_type === "parduota") return w.price != null ? `${w.price} €` : "—";
-  if (w.reason_type === "remontui") return w.rma || "—";
-  return w.reason || "—";
-}
 
 export default function PartsWriteoffs() {
   // Pradinis priežasties filtras gali ateiti iš URL (žr. /statistika
@@ -134,7 +119,7 @@ export default function PartsWriteoffs() {
 
   async function handleExport() {
     setExporting(true);
-    const { data } = await buildQuery();
+    const [{ data }, { exportPartsWriteoffsToExcel }] = await Promise.all([buildQuery(), import("../lib/exportExcel")]);
     await exportPartsWriteoffsToExcel(data || [], `Nurasymai-${new Date().toISOString().slice(0, 10)}.xlsx`);
     setExporting(false);
   }

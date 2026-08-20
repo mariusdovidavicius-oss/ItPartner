@@ -1,18 +1,9 @@
-import { createClient } from "@supabase/supabase-js";
 import { PERMISSION_KEYS, PALLET_PERMISSION_KEYS, DEVICE_PERMISSION_KEYS } from "../src/lib/permissions.js";
 import { AUTH_EMAIL_DOMAIN } from "../src/lib/authConstants.js";
+import { requireAdminCaller } from "../src/lib/adminAuth.js";
 
-// Vercel serverless funkcija — vienintelė vieta, kur naudojamas Supabase
-// service_role raktas (SUPABASE_SERVICE_ROLE_KEY aplinkos kintamasis,
-// BE "VITE_" priešdėlio, kad Vite jo neįtrauktų į naršyklės bundle'ą).
-// Kviečiantis turi būti prisijungęs adminas — tikrinama pagal jo access
-// token'ą prieš kuriant naują vartotoją.
-
-function adminClient() {
-  return createClient(process.env.VITE_SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY, {
-    auth: { autoRefreshToken: false, persistSession: false }
-  });
-}
+// Vercel serverless funkcija. Kviečiantis turi būti prisijungęs adminas —
+// tikrinama pagal jo access token'ą prieš kuriant naują vartotoją.
 
 export default async function handler(req, res) {
   if (req.method !== "POST") {
@@ -20,29 +11,9 @@ export default async function handler(req, res) {
     return;
   }
 
-  const authHeader = req.headers.authorization || "";
-  const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : "";
-  if (!token) {
-    res.status(401).json({ error: "Trūksta prisijungimo žymens." });
-    return;
-  }
-
-  const supabaseAdmin = adminClient();
-
-  const { data: callerData, error: callerError } = await supabaseAdmin.auth.getUser(token);
-  if (callerError || !callerData?.user) {
-    res.status(401).json({ error: "Neteisingas arba pasibaigęs prisijungimas." });
-    return;
-  }
-
-  const { data: callerProfile } = await supabaseAdmin
-    .from("profiles")
-    .select("is_admin")
-    .eq("id", callerData.user.id)
-    .maybeSingle();
-
-  if (!callerProfile?.is_admin) {
-    res.status(403).json({ error: "Tik administratorius gali kurti vartotojus." });
+  const { supabaseAdmin, error: authError } = await requireAdminCaller(req);
+  if (authError) {
+    res.status(authError.status).json({ error: authError.message });
     return;
   }
 

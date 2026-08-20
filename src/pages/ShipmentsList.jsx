@@ -3,18 +3,8 @@ import { Link, useNavigate } from "react-router-dom";
 import { ArrowLeft, Loader2, FileSpreadsheet, Eye, Boxes, AlertCircle, Search } from "lucide-react";
 import { supabase } from "../lib/supabaseClient";
 import { prettifyDestination, UNCLASSIFIED } from "../lib/destination";
-import { exportPalletsToExcel } from "../lib/exportExcel";
 import DestinationBadge from "../components/DestinationBadge";
-
-function formatDate(ts) {
-  if (!ts) return "—";
-  return new Date(ts).toLocaleDateString("lt-LT");
-}
-
-// Apsaugo nuo netyčinio ILIKE wildcard elgesio, jei paieškos tekste yra % arba _.
-function escapeLike(str) {
-  return str.replace(/[%_]/g, (c) => `\\${c}`);
-}
+import { escapeLike, formatDate } from "../lib/format";
 
 // Stulpeliai su įdėtais pallets/shipments duomenimis — "!inner" užtikrina, kad
 // grąžinami tik prietaisai, kurie priklauso jau IŠVEŽTAI paletei (t. y. turi
@@ -137,6 +127,7 @@ export default function ShipmentsList() {
       .from("pallets")
       .select("id, code, number, destination, packed_at")
       .eq("shipment_id", shipment.id);
+    const { exportPalletsToExcel } = await import("../lib/exportExcel");
     const result = await exportPalletsToExcel(palletData || [], `${shipment.code}.xlsx`);
     if (!result.ok) setNotice(result.message);
     setDownloadingId(null);

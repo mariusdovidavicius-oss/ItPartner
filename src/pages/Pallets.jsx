@@ -7,9 +7,9 @@ import {
 import { supabase } from "../lib/supabaseClient";
 import { prettifyDestination, splitDestination, UNCLASSIFIED } from "../lib/destination";
 import { printPalletLabel, printPalletLabels } from "../lib/printLabel";
-import { exportPalletsToExcel } from "../lib/exportExcel";
 import DestinationBadge from "../components/DestinationBadge";
 import { useAuth } from "../lib/AuthProvider";
+import { formatDate } from "../lib/format";
 
 export default function Pallets() {
   const location = useLocation();
@@ -240,11 +240,6 @@ export default function Pallets() {
     return p.number ? `${p.number} paletė` : p.code;
   }
 
-  function formatDate(ts) {
-    if (!ts) return "—";
-    return new Date(ts).toLocaleDateString("lt-LT");
-  }
-
   // Kai "ship" teisės nėra, pažymėjimas neprieinamas — eksportuojamos visos
   // šiuo metu matomos (filtruotos) paletės, ne pažymėtos.
   async function handleDownloadSelected() {
@@ -255,6 +250,7 @@ export default function Pallets() {
       ? readyPalletsFiltered.filter((p) => selectedReady.has(p.id))
       : readyPalletsFiltered;
     const suffix = activeFilter !== "all" ? `-${activeFilter}` : "";
+    const { exportPalletsToExcel } = await import("../lib/exportExcel");
     const result = await exportPalletsToExcel(
       selectedPallets,
       `Paletes-${new Date().toISOString().slice(0, 10)}${suffix}.xlsx`
@@ -359,6 +355,7 @@ export default function Pallets() {
   async function handleDownloadHistory(shipment) {
     setHistoryDownloadingId(shipment.id);
     const shipmentPallets = shipmentPalletsMap[shipment.id] || [];
+    const { exportPalletsToExcel } = await import("../lib/exportExcel");
     const result = await exportPalletsToExcel(shipmentPallets, `${shipment.code}.xlsx`);
     if (!result.ok) setNotice(result.message);
     setHistoryDownloadingId(null);

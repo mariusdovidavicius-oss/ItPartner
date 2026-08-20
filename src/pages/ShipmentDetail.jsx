@@ -5,13 +5,8 @@ import {
 } from "lucide-react";
 import { supabase } from "../lib/supabaseClient";
 import { prettifyDestination } from "../lib/destination";
-import { exportPalletsToExcel } from "../lib/exportExcel";
 import { printPalletLabels } from "../lib/printLabel";
-
-function formatDate(ts) {
-  if (!ts) return "—";
-  return new Date(ts).toLocaleDateString("lt-LT");
-}
+import { formatDate } from "../lib/format";
 
 export default function ShipmentDetail() {
   const { id } = useParams();
@@ -100,6 +95,7 @@ export default function ShipmentDetail() {
     if (!shipment || pallets.length === 0) return;
     setDownloading(true);
     setNotice("");
+    const { exportPalletsToExcel } = await import("../lib/exportExcel");
     const result = await exportPalletsToExcel(pallets, `${shipment.code}.xlsx`);
     if (!result.ok) setNotice(result.message);
     setDownloading(false);

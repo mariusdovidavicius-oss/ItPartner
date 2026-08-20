@@ -5,13 +5,10 @@ import {
   PackagePlus, PackageMinus, Trash2, Download, AlertCircle, ImageIcon, ClipboardList
 } from "lucide-react";
 import { supabase } from "../lib/supabaseClient";
-import { exportDevicesToExcel } from "../lib/exportExcel";
 import { useAuth } from "../lib/AuthProvider";
-
-// Apsaugo nuo netyčinio ILIKE wildcard elgesio, jei paieškos tekste yra % arba _.
-function escapeLike(str) {
-  return str.replace(/[%_]/g, (c) => `\\${c}`);
-}
+import { stockLevelRowTone, stockLevelBorderClass, stockLevelTitle } from "../lib/stockLevel";
+import { escapeLike } from "../lib/format";
+import { DEVICE_WRITEOFF_REASONS as WRITEOFF_REASONS } from "../lib/writeoffReasons";
 
 const PAGE_SIZE_OPTIONS = [10, 25, 50, 100];
 // Numatytasis mažo likučio slenkstis, kai prietaisas neturi savo
@@ -291,7 +288,7 @@ export default function Devices() {
 
   async function handleExport() {
     setExporting(true);
-    const { data } = await buildQuery();
+    const [{ data }, { exportDevicesToExcel }] = await Promise.all([buildQuery(), import("../lib/exportExcel")]);
     await exportDevicesToExcel(data || [], `Prietaisai-${new Date().toISOString().slice(0, 10)}.xlsx`);
     setExporting(false);
   }
@@ -412,7 +409,7 @@ export default function Devices() {
             <Boxes className="text-ink-600/30" size={24} />
             <p className="text-sm text-ink-600/60">
               {totalCount === 0 && debouncedSearch.trim() === "" && manufacturerFilter === "" && stockFilter === "all"
-                ? "Prietaisų dar nėra — importuokite juos per /prietaisai/importas."
+                ? "Prietaisų dar nėra — importuokite juos per /importas."
                 : "Pagal paiešką nieko nerasta."}
             </p>
           </div>
@@ -436,24 +433,13 @@ export default function Devices() {
                 {devices.map((d) => {
                   const expanded = expandedIds.has(d.id);
                   const level = stockLevel(d);
-                  const rowTone =
-                    level === "out"
-                      ? "bg-signal-red/[0.04] hover:bg-signal-red/[0.07]"
-                      : level === "low"
-                      ? "bg-signal-amber/[0.05] hover:bg-signal-amber/[0.08]"
-                      : "hover:bg-ink-900/[0.015]";
+                  const rowTone = stockLevelRowTone(level);
                   return (
                     <Fragment key={d.id}>
                       <tr className={expanded ? "bg-ink-900/[0.015]" : rowTone}>
                         <td
-                          className={`w-8 border-l-[3px] px-2 py-2.5 ${
-                            level === "out"
-                              ? "border-signal-red"
-                              : level === "low"
-                              ? "border-signal-amber"
-                              : "border-transparent"
-                          }`}
-                          title={level === "out" ? "Baigėsi likutis" : level === "low" ? "Mažas likutis" : undefined}
+                          className={`w-8 border-l-[3px] px-2 py-2.5 ${stockLevelBorderClass(level)}`}
+                          title={stockLevelTitle(level)}
                         >
                           <button
                             type="button"
@@ -582,13 +568,6 @@ export default function Devices() {
     </div>
   );
 }
-
-const WRITEOFF_REASONS = [
-  { value: "parduota", label: "Parduota" },
-  { value: "remontui", label: "Panaudota remontui" },
-  { value: "garantija", label: "Garantinis pakeitimas" },
-  { value: "kita", label: "Kita" }
-];
 
 function DeviceDetail({
   device, canEdit, canDelete, deletingId, onSaveNotes, onEditDevice, onDeleteDevice,

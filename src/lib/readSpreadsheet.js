@@ -69,8 +69,9 @@ function padRows(rows) {
 
 // Excel (.xlsx) arba CSV failas -> masyvas eilučių (kiekviena eilutė —
 // masyvas TEKSTO reikšmių pagal stulpelio indeksą, visos eilutės tolygiai
-// užpildytos iki bendro stulpelių skaičiaus). Naudojama /priedai/importas ir
-// /katalogas importo puslapiuose vietoj anksčiau naudotos "xlsx" bibliotekos
+// užpildytos iki bendro stulpelių skaičiaus). Naudojama /importas puslapio
+// visuose trijuose importo tipuose (priedai/prietaisai/katalogas) vietoj
+// anksčiau naudotos "xlsx" bibliotekos
 // (senas .xls binarinis formatas nebepalaikomas — tik .xlsx ir .csv).
 export async function readSpreadsheetRows(file) {
   if (/\.csv$/i.test(file.name)) {

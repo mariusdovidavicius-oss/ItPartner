@@ -1847,3 +1847,265 @@ $$;
 grant execute on function public.unpick_device_pickup(uuid) to authenticated;
 
 alter publication supabase_realtime add table public.device_pickups;
+
+-- ------------------------------------------------------------
+-- 26. Paletžų numeravimo pertvarkymas — DVI ETAPais (abu buvo atskiri
+-- migrate_*.sql, bet niekada nebuvo sulieti atgal į šį failą, todėl švari
+-- DB, sukurta vien iš šio failo iki šios sekcijos, gautų PASENUSĮ (22
+-- sekcijos) "gyvo spragos paieškos INSERT metu" mechanizmą vietoj to, kas
+-- realiai naudojama šiandien). Sekcija tyčia palieka matomą tarpinį
+-- "dviejų eilių" žingsnį (26a), kurį 26b iš dalies pakeičia/išvalo —
+-- lygiai taip, kaip šios dvi migracijos buvo pritaikytos realioje DB, kad
+-- galutinė būsena būtų garantuotai teisinga.
+-- (Naujai DB — čia; esamai DB, kuri dar neturi šių dviejų, naudoti
+-- migrate_two_queue_numbering.sql, tada migrate_simple_close_numbering.sql)
+-- ------------------------------------------------------------
+
+-- 26a. migrate_two_queue_numbering.sql — numeris priskiriamas UŽDARANT
+-- paletę (ne kuriant), atskiras "ready" eilės pozicijos skaitliukas.
+drop trigger if exists pallets_reset_numbering_on_ready on public.pallets;
+drop function if exists public.reset_pallet_numbering_on_ready();
+drop table if exists public.pallet_number_counters;
+
+create or replace function public.assign_pallet_number_on_close()
+returns trigger as $$
+declare
+  v_number integer;
+begin
+  if new.status = 'closed' and old.status is distinct from 'closed' then
+    select coalesce(min(t.n), 1)
+      into v_number
+      from generate_series(1, (
+        select coalesce(max(number), 0) + 1
+          from public.pallets
+         where destination = new.destination
+           and status = 'closed'
+           and shipment_id is null
+           and id <> new.id
+      )) as t(n)
+     where not exists (
+       select 1 from public.pallets
+        where destination = new.destination
+          and status = 'closed'
+          and shipment_id is null
+          and id <> new.id
+          and number = t.n
+     );
+
+    new.number := v_number;
+    new.code   := 'PAL-' || v_number;
+  end if;
+  return new;
+end;
+$$ language plpgsql security definer set search_path = public;
+
+drop trigger if exists pallets_assign_number_on_close on public.pallets;
+create trigger pallets_assign_number_on_close
+  before update on public.pallets
+  for each row execute function public.assign_pallet_number_on_close();
+
+create table if not exists public.pallet_ready_counters (
+  destination      text primary key,
+  current_position integer not null default 0
+);
+
+comment on table public.pallet_ready_counters is
+  'Ready eilės pozicijos skaitliukas per destination. Atsistato kai siunta pažymima sent.';
+
+alter table public.pallet_ready_counters enable row level security;
+
+insert into public.pallet_ready_counters (destination, current_position)
+select destination, coalesce(max(number), 0)
+  from public.pallets
+ where status = 'ready'
+   and shipment_id is null
+   and number is not null
+ group by destination
+on conflict (destination) do update set current_position = excluded.current_position;
+
+create or replace function public.assign_pallet_ready_position()
+returns trigger as $$
+declare
+  v_position integer;
+begin
+  if new.status = 'ready' and old.status is distinct from 'ready' then
+    insert into public.pallet_ready_counters (destination, current_position)
+    values (new.destination, 1)
+    on conflict (destination) do update
+      set current_position = public.pallet_ready_counters.current_position + 1
+    returning current_position into v_position;
+
+    new.number := v_position;
+    new.code   := 'PAL-' || v_position;
+  end if;
+  return new;
+end;
+$$ language plpgsql security definer set search_path = public;
+
+drop trigger if exists pallets_assign_ready_position on public.pallets;
+create trigger pallets_assign_ready_position
+  before update on public.pallets
+  for each row execute function public.assign_pallet_ready_position();
+
+create or replace function public.reset_pallet_ready_position_on_sent()
+returns trigger as $$
+begin
+  if (tg_op = 'INSERT' and new.status = 'sent')
+     or (tg_op = 'UPDATE' and new.status = 'sent' and old.status is distinct from 'sent') then
+    insert into public.pallet_ready_counters (destination, current_position)
+    values (new.destination, 0)
+    on conflict (destination) do update set current_position = 0;
+  end if;
+  return new;
+end;
+$$ language plpgsql security definer set search_path = public;
+
+drop trigger if exists shipments_reset_ready_position on public.shipments;
+create trigger shipments_reset_ready_position
+  after insert or update on public.shipments
+  for each row execute function public.reset_pallet_ready_position_on_sent();
+
+-- 26b. migrate_simple_close_numbering.sql — supaprastina 26a: numeris VIS
+-- TIEK priskiriamas uždarant, bet nebe spragos paieška, o paprastas
+-- skaitliukas; atskira "ready" eilės pozicijos sistema (26a) PANAIKINAMA;
+-- "code" tampa nullable, nes atviros paletės numerio neturi.
+drop trigger if exists pallets_set_number on public.pallets;
+drop function if exists public.set_pallet_number();
+
+drop trigger if exists pallets_assign_ready_position on public.pallets;
+drop function if exists public.assign_pallet_ready_position();
+
+drop trigger if exists shipments_reset_ready_position on public.shipments;
+drop function if exists public.reset_pallet_ready_position_on_sent();
+
+drop table if exists public.pallet_ready_counters;
+
+alter table public.pallets alter column code drop not null;
+
+update public.pallets set number = null, code = null where status = 'open';
+
+create table if not exists public.pallet_number_counters (
+  destination    text primary key,
+  current_number integer not null default 0
+);
+
+comment on table public.pallet_number_counters is
+  'Kiekvienos destination dabartinis paletžų numeris. Didinamas uždarant paletę, atsistato kai siunta pažymima sent.';
+
+alter table public.pallet_number_counters enable row level security;
+
+insert into public.pallet_number_counters (destination, current_number)
+select destination, coalesce(max(number), 0)
+  from public.pallets
+ where status in ('closed', 'ready')
+   and shipment_id is null
+   and number is not null
+ group by destination
+on conflict (destination) do update set current_number = excluded.current_number;
+
+create or replace function public.assign_pallet_number_on_close()
+returns trigger as $$
+declare
+  v_number integer;
+begin
+  if new.status = 'closed' and (old.status is distinct from 'closed') and new.number is null then
+    insert into public.pallet_number_counters (destination, current_number)
+    values (new.destination, 1)
+    on conflict (destination) do update
+      set current_number = public.pallet_number_counters.current_number + 1
+    returning current_number into v_number;
+
+    new.number := v_number;
+    new.code   := 'PAL-' || v_number;
+  end if;
+  return new;
+end;
+$$ language plpgsql security definer set search_path = public;
+
+drop trigger if exists pallets_assign_number_on_close on public.pallets;
+create trigger pallets_assign_number_on_close
+  before update on public.pallets
+  for each row execute function public.assign_pallet_number_on_close();
+
+create or replace function public.clear_pallet_number_on_reopen()
+returns trigger as $$
+begin
+  if new.status = 'open' and old.status is distinct from 'open' then
+    new.number := null;
+    new.code   := null;
+  end if;
+  return new;
+end;
+$$ language plpgsql;
+
+drop trigger if exists pallets_clear_number_on_reopen on public.pallets;
+create trigger pallets_clear_number_on_reopen
+  before update on public.pallets
+  for each row execute function public.clear_pallet_number_on_reopen();
+
+drop trigger if exists shipments_reset_pallet_numbering on public.shipments;
+drop function if exists public.reset_pallet_numbering_on_shipment_sent();
+
+create or replace function public.reset_pallet_numbering_on_ready()
+returns trigger as $$
+begin
+  if new.status = 'ready' and old.status is distinct from 'ready' then
+    insert into public.pallet_number_counters (destination, current_number)
+    values (new.destination, 0)
+    on conflict (destination) do update set current_number = 0;
+  end if;
+  return new;
+end;
+$$ language plpgsql security definer set search_path = public;
+
+drop trigger if exists pallets_reset_numbering_on_ready on public.pallets;
+create trigger pallets_reset_numbering_on_ready
+  after update on public.pallets
+  for each row execute function public.reset_pallet_numbering_on_ready();
+
+-- ------------------------------------------------------------
+-- 27. reset_test_data() — GALUTINĖ, teisinga versija.
+-- Sujungia du atskirus, niekad anksčiau čia neatsispindėjusius pataisymus:
+--   a) migrate_admin_reset_require_admin.sql — funkcija anksčiau (271 eil.
+--      grant'as, niekad neatšauktas) buvo leidžiama BET KAM su viešu "anon"
+--      raktu, nepriklausomai nuo to, ar /admin-reset puslapis užrakintas
+--      React pusėje (lengvai apeinama kreipiantis tiesiai į Supabase REST
+--      API). Dabar tikrinama is_admin() VIDUJE funkcijos ir anon prieiga
+--      atšaukiama grant/revoke lygmenyje — dvigubas saugiklis.
+--   b) svarbu: PATI migrate_admin_reset_require_admin.sql versija dar
+--      turėjo "truncate table public.pallet_ready_counters" eilutę — ta
+--      lentelė TADA JAU BUVO PAŠALINTA (žr. 26b aukščiau, ankstesnė
+--      migracija chronologiškai). PL/pgSQL funkcijos kūrimo metu Postgres
+--      NETIKRINA vidinių SQL sakinių prieš lentelių/stulpelių egzistavimą
+--      (tikrinama tik iškvietimo metu) — tad CREATE OR REPLACE praeidavo
+--      be klaidos, bet PATS admin-reset mygtukas gamyboje realiai mestų
+--      klaidą "relation pallet_ready_counters does not exist" kiekvieną
+--      kartą jį paspaudus. Čia ta eilutė pašalinta — teisinga versija
+--      valo tik pallet_number_counters (26b sukurtą).
+-- ------------------------------------------------------------
+create or replace function public.reset_test_data()
+returns json
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  if not public.is_admin(auth.uid()) then
+    raise exception 'Tik administratorius gali išvalyti testavimo duomenis.';
+  end if;
+
+  truncate table
+    public.item_history,
+    public.items,
+    public.pallets,
+    public.shipments
+  cascade;
+
+  truncate table public.pallet_number_counters;
+
+  return json_build_object('ok', true);
+end;
+$$;
+
+revoke all on function public.reset_test_data() from public, anon;
+grant execute on function public.reset_test_data() to authenticated;

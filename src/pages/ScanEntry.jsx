@@ -7,6 +7,7 @@ import { supabase } from "../lib/supabaseClient";
 import { computeDestination, prettifyDestination, UNCLASSIFIED } from "../lib/destination";
 import { printPalletLabel } from "../lib/printLabel";
 import { useAuth } from "../lib/AuthProvider";
+import { escapeLike, formatDateTime } from "../lib/format";
 
 // Leistini gamintojo -> tipo deriniai rankiniam naujo įrankio įvedimui.
 // Reikšmės TIKSLIAI atitinka jau naudojamas catalog.manufacturer/item_type
@@ -30,16 +31,6 @@ function parseManualEntry(raw) {
   const match = text.match(/^(.*)\((\d+)\)\s*$/);
   if (!match) return { ian: null, name: null };
   return { ian: match[2].trim(), name: match[1].trim() };
-}
-
-function formatDateTime(ts) {
-  if (!ts) return "—";
-  return new Date(ts).toLocaleString("lt-LT");
-}
-
-// Apsaugo nuo netyčinio ILIKE wildcard elgesio, jei pavadinime yra % arba _.
-function escapeLike(str) {
-  return str.replace(/[%_]/g, (c) => `\\${c}`);
 }
 
 export default function ScanEntry() {
@@ -95,7 +86,6 @@ export default function ScanEntry() {
       .subscribe();
 
     return () => supabase.removeChannel(channel);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Perkeliant fokusą į aktyvaus režimo lauką (patogu ir keičiant režimą, ir
@@ -370,7 +360,7 @@ export default function ScanEntry() {
 
     const nameValue = overrides.nameValue !== undefined ? overrides.nameValue : name;
 
-    let feedbackMsg = "";
+    let feedbackMsg;
     let hasError = false;
 
     if (existing) {

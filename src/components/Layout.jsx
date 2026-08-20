@@ -231,7 +231,6 @@ function MoreMenuSheet({ groups, onClose }) {
 export default function Layout() {
   const { user, profile, isAdmin, signOut, hasPermission, hasDevicePermission } = useAuth();
   const canSeeWriteoffs = hasPermission("delete");
-  const canImportDevices = hasDevicePermission("import");
   const canSeeDeviceWriteoffs = hasDevicePermission("delete");
   const canSeeDevicePickups = hasDevicePermission("edit");
 
@@ -239,15 +238,15 @@ export default function Layout() {
 
   const navGroups = useMemo(() => {
     // "Prietaisai", kaip ir "Priedai", peržiūra dabar VIEŠA — nuoroda visada
-    // statiniame BASE_NAV_GROUPS; tik "Importas"/"Nurašymai" pounoroda lieka
-    // pagal atitinkamą teisę (import/delete).
+    // statiniame BASE_NAV_GROUPS; tik "Nurašymai"/"Atsinešimai" pounoroda lieka
+    // pagal atitinkamą teisę. Importas (visų trijų tipų, su pasirinkimu viduje)
+    // nebeturi savo pounuorodos čia — jis tik adminams, po "Admin" grupe.
     let groups = BASE_NAV_GROUPS.map((g) => {
       if (g.label === "Priedų sandėlis" && canSeeWriteoffs) {
         return { ...g, items: [...g.items, { to: "/priedai/nurasymai", label: "Nurašymai", icon: PackageMinus }] };
       }
       if (g.label === "Prietaisų sandėlis") {
         const extra = [];
-        if (canImportDevices) extra.push({ to: "/prietaisai/importas", label: "Importas", icon: FileUp });
         if (canSeeDevicePickups) extra.push({ to: "/prietaisai/atsinesimai", label: "Atsinešimai", icon: ClipboardList });
         if (canSeeDeviceWriteoffs) extra.push({ to: "/prietaisai/nurasymai", label: "Nurašymai", icon: PackageMinus });
         return extra.length ? { ...g, items: [...g.items, ...extra] } : g;
@@ -263,8 +262,11 @@ export default function Layout() {
     }
 
     if (!isAdmin) return groups;
-    return [...groups, { label: "Admin", items: [{ to: "/priedai/vartotojai", label: "Vartotojai", icon: Users }] }];
-  }, [isAdmin, canSeeWriteoffs, canImportDevices, canSeeDevicePickups, canSeeDeviceWriteoffs, canSeeStats]);
+    return [...groups, { label: "Admin", items: [
+      { to: "/importas", label: "Importas", icon: FileUp },
+      { to: "/priedai/vartotojai", label: "Vartotojai", icon: Users }
+    ] }];
+  }, [isAdmin, canSeeWriteoffs, canSeeDevicePickups, canSeeDeviceWriteoffs, canSeeStats]);
 
   return (
     <div className="flex min-h-screen flex-col bg-paper">

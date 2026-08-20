@@ -6,11 +6,7 @@ import {
 import { supabase } from "../lib/supabaseClient";
 import { useAuth } from "../lib/AuthProvider";
 import { readTransferPdfRows } from "../lib/readTransferPdf";
-
-function formatDate(ts) {
-  if (!ts) return "—";
-  return new Date(ts).toLocaleDateString("lt-LT");
-}
+import { formatDate } from "../lib/format";
 
 // Rodo, KUR sandėlyje prietaiso šiuo metu yra (dar nepasirinkta konkreti
 // lokacija — tai įvyksta tik pažymint "paimta") — padeda greitai susirasti

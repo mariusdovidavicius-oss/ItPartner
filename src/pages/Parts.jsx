@@ -5,13 +5,10 @@ import {
   ChevronDown, ChevronUp, ImageIcon, Pencil, X, PackagePlus, PackageMinus, Trash2, Download, AlertCircle
 } from "lucide-react";
 import { supabase } from "../lib/supabaseClient";
-import { exportPartsToExcel } from "../lib/exportExcel";
 import { useAuth } from "../lib/AuthProvider";
-
-// Apsaugo nuo netyčinio ILIKE wildcard elgesio, jei paieškos tekste yra % arba _.
-function escapeLike(str) {
-  return str.replace(/[%_]/g, (c) => `\\${c}`);
-}
+import { stockLevelRowTone, stockLevelBorderClass, stockLevelTitle } from "../lib/stockLevel";
+import { escapeLike } from "../lib/format";
+import { PART_WRITEOFF_REASONS as WRITEOFF_REASONS } from "../lib/writeoffReasons";
 
 const PAGE_SIZE_OPTIONS = [10, 25, 50, 100];
 // Numatytasis mažo likučio slenkstis, kai priedas neturi savo individualaus
@@ -299,7 +296,7 @@ export default function Parts() {
 
   async function handleExport() {
     setExporting(true);
-    const { data } = await buildQuery();
+    const [{ data }, { exportPartsToExcel }] = await Promise.all([buildQuery(), import("../lib/exportExcel")]);
     await exportPartsToExcel(data || [], `Priedai-${new Date().toISOString().slice(0, 10)}.xlsx`);
     setExporting(false);
   }
@@ -424,7 +421,7 @@ export default function Parts() {
             <Boxes className="text-ink-600/30" size={24} />
             <p className="text-sm text-ink-600/60">
               {totalCount === 0 && debouncedSearch.trim() === "" && locationFilter === "" && stockFilter === "all"
-                ? "Priedų dar nėra — importuokite juos per /priedai/importas."
+                ? "Priedų dar nėra — importuokite juos per /importas."
                 : "Pagal paiešką nieko nerasta."}
             </p>
           </div>
@@ -452,24 +449,13 @@ export default function Parts() {
                   const expanded = expandedIds.has(p.id);
                   const notesDraft = notesDrafts[p.id] ?? "";
                   const level = p.stock_level || "ok";
-                  const rowTone =
-                    level === "out"
-                      ? "bg-signal-red/[0.04] hover:bg-signal-red/[0.07]"
-                      : level === "low"
-                      ? "bg-signal-amber/[0.05] hover:bg-signal-amber/[0.08]"
-                      : "hover:bg-ink-900/[0.015]";
+                  const rowTone = stockLevelRowTone(level);
                   return (
                     <Fragment key={p.id}>
                       <tr className={expanded ? "bg-ink-900/[0.015]" : rowTone}>
                         <td
-                          className={`w-8 border-l-[3px] px-2 py-2.5 ${
-                            level === "out"
-                              ? "border-signal-red"
-                              : level === "low"
-                              ? "border-signal-amber"
-                              : "border-transparent"
-                          }`}
-                          title={level === "out" ? "Baigėsi likutis" : level === "low" ? "Mažas likutis" : undefined}
+                          className={`w-8 border-l-[3px] px-2 py-2.5 ${stockLevelBorderClass(level)}`}
+                          title={stockLevelTitle(level)}
                         >
                           <button
                             type="button"
@@ -772,12 +758,6 @@ export default function Parts() {
     </div>
   );
 }
-
-const WRITEOFF_REASONS = [
-  { value: "parduota", label: "Parduota" },
-  { value: "remontui", label: "Panaudota remontui" },
-  { value: "kita", label: "Kita" }
-];
 
 function WriteoffModal({ part, onClose, onSave }) {
   const [quantity, setQuantity] = useState("1");

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Upload, FileSpreadsheet, CheckCircle2, AlertCircle, Loader2 } from "lucide-react";
 import { supabase } from "../lib/supabaseClient";
-import { normalizeHeader } from "../lib/excelHeaders";
+import { normalizeHeader, columnLabel } from "../lib/excelHeaders";
 import { readSpreadsheetRows } from "../lib/readSpreadsheet";
 
 const BATCH_SIZE = 500;
@@ -17,16 +17,6 @@ const FIELDS = [
   { key: "online_store", label: "El. parduotuvė", match: ["el. parduotuve", "el parduotuve"] },
   { key: "compatible_models", label: "Suderinami Modeliai", match: ["suderinami modeliai"] }
 ];
-
-function columnLabel(index) {
-  let n = index;
-  let label = "";
-  do {
-    label = String.fromCharCode((n % 26) + 65) + label;
-    n = Math.floor(n / 26) - 1;
-  } while (n >= 0);
-  return label;
-}
 
 // Excel eilutė (raw reikšmės pagal stulpelio indeksą) -> tipizuotas parts įrašas.
 function toRecord(row, columnMap) {
