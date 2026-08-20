@@ -423,9 +423,10 @@ export default function Devices() {
                 <tr>
                   <th className="w-8 px-2 py-2.5"></th>
                   <th className="px-3 py-2.5 font-semibold">Prietaisas</th>
-                  <th className="px-3 py-2.5 font-semibold">IAN</th>
-                  <th className="px-3 py-2.5 font-semibold">Iš viso</th>
-                  <th className="w-8 px-2 py-2.5"></th>
+                  {/* Sticky dešinieji stulpeliai — visada matomi be horizontalaus skrolinimo telefone,
+                      net jei pavadinimo stulpelis priverčia lentelę pasidaryti platesnę už ekraną. */}
+                  <th className="sticky right-10 z-10 bg-white px-3 py-2.5 font-semibold">Iš viso</th>
+                  <th className="sticky right-0 z-10 w-10 bg-white px-1 py-2.5"></th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-ink-900/5">
@@ -460,10 +461,12 @@ export default function Devices() {
                             {expanded ? <ChevronUp size={15} /> : <ChevronDown size={15} />}
                           </button>
                         </td>
-                        <td className="max-w-[220px] truncate px-3 py-2.5 text-ink-800">{d.name || "—"}</td>
-                        <td className="max-w-[120px] truncate px-3 py-2.5 font-mono text-ink-900">{d.ian}</td>
-                        <td className="px-3 py-2.5 font-bold text-ink-900">{totalQuantity(d)}</td>
-                        <td className="w-8 px-2 py-2.5">
+                        <td className="max-w-[220px] px-3 py-2.5 text-ink-800">
+                          <p className="truncate">{d.name || "—"}</p>
+                          <p className="truncate font-mono text-xs text-ink-600/50">{d.ian}</p>
+                        </td>
+                        <td className="sticky right-10 z-10 bg-white px-3 py-2.5 font-bold text-ink-900">{totalQuantity(d)}</td>
+                        <td className="sticky right-0 z-10 w-10 bg-white px-1 py-2.5">
                           {canEdit && (
                             <button
                               type="button"
@@ -481,7 +484,7 @@ export default function Devices() {
 
                       {expanded && (
                         <tr className="bg-ink-900/[0.015]">
-                          <td colSpan={5} className="px-4 py-4">
+                          <td colSpan={4} className="px-4 py-4">
                             <DeviceDetail
                               device={d}
                               canEdit={canEdit}
