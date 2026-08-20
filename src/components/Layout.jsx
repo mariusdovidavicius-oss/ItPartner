@@ -274,11 +274,12 @@ export default function Layout() {
       <div className="lg:flex lg:flex-1">
         {/* Desktop / tablet sidebar */}
         <aside className="hidden lg:flex lg:w-64 lg:flex-col lg:gap-1 bg-ink-950 px-4 py-6">
-          <div className="mb-6 flex items-center gap-2.5 px-2">
-            <div className="flex shrink-0 items-center justify-center rounded-lg bg-white px-2 py-1.5">
-              <img src="/itp-logo.png" alt="IT Partner" className="h-6 w-auto" />
-            </div>
-            <p className="text-sm font-semibold text-white">Sandėlio valdymas</p>
+          {/* Šviesi juosta viršuje (ne maža balta dėžutė) — logotipas turi
+              tamsų tekstą permatomame fone, todėl jam reikia šviesaus fono
+              visame plotyje, ne tik aplink patį paveikslėlį. */}
+          <div className="-mx-4 -mt-6 mb-6 flex items-center gap-2.5 bg-white px-4 py-5">
+            <img src="/itp-logo.png" alt="IT Partner" className="h-10 w-auto" />
+            <p className="text-sm font-semibold text-ink-900">Sandėlio valdymas</p>
           </div>
           <nav className="flex flex-1 flex-col gap-1">
             <NavItems orientation="vertical" groups={navGroups} />
@@ -303,8 +304,8 @@ export default function Layout() {
 
         {/* Content */}
         <div className="flex-1 pb-20 lg:pb-0">
-          <header className="flex items-center gap-2.5 border-b border-ink-900/5 bg-white/80 px-4 py-3 backdrop-blur lg:hidden">
-            <img src="/itp-logo.png" alt="IT Partner" className="h-7 w-auto" />
+          <header className="flex items-center gap-2.5 border-b border-ink-900/5 bg-white/80 px-4 py-2.5 backdrop-blur lg:hidden">
+            <img src="/itp-logo.png" alt="IT Partner" className="h-9 w-auto" />
             <p className="text-sm font-semibold text-ink-900">Sandėlio valdymas</p>
           </header>
 
