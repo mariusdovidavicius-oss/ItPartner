@@ -435,8 +435,13 @@ export default function Parts() {
                 <tr>
                   <th className="w-8 px-2 py-2.5"></th>
                   <th className="px-3 py-2.5 font-semibold">Priedas</th>
-                  {/* "Kiekis" — sticky, visada matomas be horizontalaus skrolinimo telefone; modelis/kodas/
-                      lokacija/el. parduotuvė sutraukti į vieną stulpelį kairėje, kad tilptų daugiau info iškart. */}
+                  {/* Atskiri stulpeliai tik nuo sm ir aukščiau (desktop/planšetė), kur vietos užtenka;
+                      telefone tie patys laukai rodomi kompaktiškai po pavadinimu (žr. žemiau). */}
+                  <th className="hidden px-3 py-2.5 font-semibold sm:table-cell">Modelis</th>
+                  <th className="hidden px-3 py-2.5 font-semibold sm:table-cell">Kodas</th>
+                  <th className="hidden px-3 py-2.5 font-semibold sm:table-cell">El. p-vė</th>
+                  <th className="hidden px-3 py-2.5 font-semibold sm:table-cell">Lok.</th>
+                  {/* "Kiekis" — sticky, visada matomas be horizontalaus skrolinimo telefone. */}
                   <th className="sticky right-0 z-10 bg-white px-3 py-2.5 font-semibold">Kiekis</th>
                 </tr>
               </thead>
@@ -477,10 +482,11 @@ export default function Parts() {
                         </td>
                         <td className="max-w-[220px] px-3 py-2.5">
                           <p className="truncate text-ink-800">{p.name || "—"}</p>
-                          <p className="truncate text-xs text-ink-600/60">
+                          {/* Kompaktiška versija tik telefone — nuo sm šie laukai jau turi savo stulpelius. */}
+                          <p className="truncate text-xs text-ink-600/60 sm:hidden">
                             {p.main_model || "—"} · <span className="font-mono">{p.part_code}</span>
                           </p>
-                          <div className="mt-1 flex flex-wrap items-center gap-1.5">
+                          <div className="mt-1 flex flex-wrap items-center gap-1.5 sm:hidden">
                             <span className="text-[10px] font-semibold text-ink-600/50">Lok. {p.location}</span>
                             <span
                               className={`inline-flex items-center rounded-full border px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${
@@ -493,6 +499,20 @@ export default function Parts() {
                             </span>
                           </div>
                         </td>
+                        <td className="hidden max-w-[140px] truncate px-3 py-2.5 text-ink-800 sm:table-cell">{p.main_model || "—"}</td>
+                        <td className="hidden max-w-[110px] truncate px-3 py-2.5 font-mono text-ink-900 sm:table-cell">{p.part_code}</td>
+                        <td className="hidden px-3 py-2.5 sm:table-cell">
+                          <span
+                            className={`inline-flex items-center rounded-full border px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${
+                              p.online_store
+                                ? "border-signal-teal/30 bg-signal-teal/10 text-signal-teal"
+                                : "border-ink-700/15 bg-ink-900/[0.03] text-ink-600/60"
+                            }`}
+                          >
+                            {p.online_store ? "Taip" : "Ne"}
+                          </span>
+                        </td>
+                        <td className="hidden px-3 py-2.5 font-bold text-ink-900 sm:table-cell">{p.location}</td>
                         <td className="sticky right-0 z-10 bg-white px-3 py-2.5">
                           {canEdit ? (
                             <div className="flex items-center gap-1">
@@ -541,7 +561,7 @@ export default function Parts() {
 
                       {expanded && (
                         <tr className="bg-ink-900/[0.015]">
-                          <td colSpan={3} className="px-4 py-4">
+                          <td colSpan={7} className="px-4 py-4">
                             <div className="grid gap-4 sm:grid-cols-[160px_1fr]">
                               <div className="flex h-28 w-full flex-col items-center justify-center gap-1.5 rounded-xl border-2 border-dashed border-ink-700/15 text-ink-600/40 sm:w-40">
                                 <ImageIcon size={22} />

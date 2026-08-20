@@ -194,67 +194,105 @@ export default function DevicePickups() {
               <p className="text-sm text-ink-600/60">Pagal pasirinktą gamintoją nieko nerasta.</p>
             </div>
           ) : (
-            <div className="overflow-x-auto">
-              <table className="w-full text-left text-sm">
-                <thead className="border-b border-ink-900/5 bg-ink-900/[0.02] text-xs uppercase tracking-wide text-ink-600/60">
-                  <tr>
-                    <th className="px-3 py-2.5 font-semibold">Prietaisas</th>
-                    <th className="px-3 py-2.5 font-semibold">IAN</th>
-                    <th className="px-3 py-2.5 font-semibold">Lokacijos</th>
-                    <th className="px-3 py-2.5 font-semibold">Kiekis</th>
-                    <th className="px-3 py-2.5 font-semibold">Pastaba</th>
-                    <th className="px-3 py-2.5 font-semibold">Pridėta</th>
-                    <th className="px-3 py-2.5 font-semibold">Gamintojas</th>
-                    <th className="w-0 px-3 py-2.5"></th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-ink-900/5">
-                  {filteredPending.map((item) => (
-                    <tr key={item.id} className="hover:bg-ink-900/[0.015]">
-                      <td
-                        className="max-w-[200px] truncate px-3 py-2.5 text-ink-800"
-                        title={item.devices?.name || undefined}
+            <>
+              {/* Telefone — veiksmo mygtukai virš pavadinimo (ne lentelės gale), kad juos būtų galima
+                  paspausti be horizontalaus skrolinimo; nuo sm rodoma pilna lentelė žemiau. */}
+              <div className="divide-y divide-ink-900/5 sm:hidden">
+                {filteredPending.map((item) => (
+                  <div key={item.id} className="p-3">
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setPickTarget(item)}
+                        className="btn-secondary flex-1 border-signal-teal/30 text-signal-teal hover:bg-signal-teal/10"
                       >
-                        {item.devices?.name || "—"}
-                      </td>
-                      <td className="px-3 py-2.5 font-mono text-xs text-ink-600/70">{item.devices?.ian || "—"}</td>
-                      <td className="max-w-[200px] truncate px-3 py-2.5 text-ink-600/70">
-                        {formatLocations(item.devices?.device_stock)}
-                      </td>
-                      <td className="px-3 py-2.5 font-semibold text-ink-800">{item.quantity}</td>
-                      <td
-                        className="max-w-[200px] truncate px-3 py-2.5 text-ink-600/70"
-                        title={item.note || undefined}
+                        <PackageCheck size={14} /> Paimta
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleDelete(item)}
+                        disabled={deletingId === item.id}
+                        className="shrink-0 rounded-lg p-2 text-ink-600/40 hover:bg-signal-red/10 hover:text-signal-red"
+                        aria-label="Pašalinti punktą"
                       >
-                        {item.note || "—"}
-                      </td>
-                      <td className="px-3 py-2.5 text-ink-600/70">{formatDate(item.created_at)}</td>
-                      <td className="px-3 py-2.5 text-ink-800">{item.devices?.manufacturer || "—"}</td>
-                      <td className="px-3 py-2.5">
-                        <div className="flex items-center justify-end gap-2">
-                          <button
-                            type="button"
-                            onClick={() => setPickTarget(item)}
-                            className="btn-secondary shrink-0 border-signal-teal/30 text-signal-teal hover:bg-signal-teal/10"
-                          >
-                            <PackageCheck size={14} /> Paimta
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => handleDelete(item)}
-                            disabled={deletingId === item.id}
-                            className="shrink-0 rounded-lg p-1.5 text-ink-600/40 hover:bg-signal-red/10 hover:text-signal-red"
-                            aria-label="Pašalinti punktą"
-                          >
-                            {deletingId === item.id ? <Loader2 size={14} className="animate-spin" /> : <Trash2 size={14} />}
-                          </button>
-                        </div>
-                      </td>
+                        {deletingId === item.id ? <Loader2 size={14} className="animate-spin" /> : <Trash2 size={14} />}
+                      </button>
+                    </div>
+                    <p className="mt-2 truncate text-sm font-medium text-ink-900">{item.devices?.name || "—"}</p>
+                    <p className="truncate font-mono text-xs text-ink-600/60">{item.devices?.ian || "—"}</p>
+                    <p className="mt-1 text-xs text-ink-600/70">
+                      {item.quantity} vnt. · {formatLocations(item.devices?.device_stock)}
+                    </p>
+                    {item.note && <p className="mt-1 truncate text-xs text-ink-600/60">Pastaba: {item.note}</p>}
+                    <p className="mt-1 truncate text-[11px] text-ink-600/40">
+                      {item.devices?.manufacturer || "—"} · {formatDate(item.created_at)}
+                    </p>
+                  </div>
+                ))}
+              </div>
+
+              <div className="hidden overflow-x-auto sm:block">
+                <table className="w-full text-left text-sm">
+                  <thead className="border-b border-ink-900/5 bg-ink-900/[0.02] text-xs uppercase tracking-wide text-ink-600/60">
+                    <tr>
+                      <th className="px-3 py-2.5 font-semibold">Prietaisas</th>
+                      <th className="px-3 py-2.5 font-semibold">IAN</th>
+                      <th className="px-3 py-2.5 font-semibold">Lokacijos</th>
+                      <th className="px-3 py-2.5 font-semibold">Kiekis</th>
+                      <th className="px-3 py-2.5 font-semibold">Pastaba</th>
+                      <th className="px-3 py-2.5 font-semibold">Pridėta</th>
+                      <th className="px-3 py-2.5 font-semibold">Gamintojas</th>
+                      <th className="w-0 px-3 py-2.5"></th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+                  </thead>
+                  <tbody className="divide-y divide-ink-900/5">
+                    {filteredPending.map((item) => (
+                      <tr key={item.id} className="hover:bg-ink-900/[0.015]">
+                        <td
+                          className="max-w-[200px] truncate px-3 py-2.5 text-ink-800"
+                          title={item.devices?.name || undefined}
+                        >
+                          {item.devices?.name || "—"}
+                        </td>
+                        <td className="px-3 py-2.5 font-mono text-xs text-ink-600/70">{item.devices?.ian || "—"}</td>
+                        <td className="max-w-[200px] truncate px-3 py-2.5 text-ink-600/70">
+                          {formatLocations(item.devices?.device_stock)}
+                        </td>
+                        <td className="px-3 py-2.5 font-semibold text-ink-800">{item.quantity}</td>
+                        <td
+                          className="max-w-[200px] truncate px-3 py-2.5 text-ink-600/70"
+                          title={item.note || undefined}
+                        >
+                          {item.note || "—"}
+                        </td>
+                        <td className="px-3 py-2.5 text-ink-600/70">{formatDate(item.created_at)}</td>
+                        <td className="px-3 py-2.5 text-ink-800">{item.devices?.manufacturer || "—"}</td>
+                        <td className="px-3 py-2.5">
+                          <div className="flex items-center justify-end gap-2">
+                            <button
+                              type="button"
+                              onClick={() => setPickTarget(item)}
+                              className="btn-secondary shrink-0 border-signal-teal/30 text-signal-teal hover:bg-signal-teal/10"
+                            >
+                              <PackageCheck size={14} /> Paimta
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleDelete(item)}
+                              disabled={deletingId === item.id}
+                              className="shrink-0 rounded-lg p-1.5 text-ink-600/40 hover:bg-signal-red/10 hover:text-signal-red"
+                              aria-label="Pašalinti punktą"
+                            >
+                              {deletingId === item.id ? <Loader2 size={14} className="animate-spin" /> : <Trash2 size={14} />}
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </>
           )}
         </div>
       </div>
@@ -269,63 +307,110 @@ export default function DevicePickups() {
               <p className="text-sm text-ink-600/60">Dar nieko nepaimta.</p>
             </div>
           ) : (
-            <div className="overflow-x-auto">
-              <table className="w-full text-left text-sm">
-                <thead className="border-b border-ink-900/5 bg-ink-900/[0.02] text-xs uppercase tracking-wide text-ink-600/60">
-                  <tr>
-                    <th className="px-3 py-2.5 font-semibold">Prietaisas</th>
-                    <th className="px-3 py-2.5 font-semibold">Kiekis</th>
-                    <th className="px-3 py-2.5 font-semibold">Lokacija</th>
-                    <th className="px-3 py-2.5 font-semibold">Pastaba</th>
-                    <th className="px-3 py-2.5 font-semibold">Paimta</th>
-                    <th className="px-3 py-2.5 font-semibold">Kas</th>
-                    <th className="px-3 py-2.5 font-semibold">Būsena</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-ink-900/5">
-                  {picked.map((item) => (
-                    <tr key={item.id} className="hover:bg-ink-900/[0.015]">
-                      <td className="max-w-[220px] truncate px-3 py-2.5 text-ink-800">
-                        {item.devices?.name || "—"}{" "}
-                        <span className="font-mono text-xs text-ink-600/50">({item.devices?.ian})</span>
-                      </td>
-                      <td className="px-3 py-2.5 font-semibold text-ink-800">{item.quantity}</td>
-                      <td className="px-3 py-2.5 text-ink-800">{item.picked_location || "—"}</td>
-                      <td className="max-w-[220px] truncate px-3 py-2.5 text-ink-600/70">{item.note || "—"}</td>
-                      <td className="px-3 py-2.5 text-ink-600/70">{formatDate(item.picked_at)}</td>
-                      <td className="px-3 py-2.5 text-ink-600/70">{item.profiles?.username || "—"}</td>
-                      <td className="px-3 py-2.5">
-                        {item.writeoff_id ? (
-                          <span className="text-xs font-medium text-ink-600/50">Nurašyta</span>
-                        ) : (
-                          <div className="flex items-center gap-2">
-                            {canFinalize && (
+            <>
+              {/* Telefone — veiksmo mygtukai virš pavadinimo (ne lentelės gale); nuo sm rodoma pilna
+                  lentelė žemiau. */}
+              <div className="divide-y divide-ink-900/5 sm:hidden">
+                {picked.map((item) => (
+                  <div key={item.id} className="p-3">
+                    {item.writeoff_id ? (
+                      <span className="text-xs font-medium text-ink-600/50">Nurašyta</span>
+                    ) : (
+                      <div className="flex items-center gap-2">
+                        {canFinalize && (
+                          <button
+                            type="button"
+                            onClick={() => handleFinalize(item)}
+                            disabled={finalizingId === item.id || unpickingId === item.id}
+                            className="btn-secondary flex-1 border-signal-amber/30 text-signal-amber hover:bg-signal-amber/10"
+                          >
+                            {finalizingId === item.id ? <Loader2 size={14} className="animate-spin" /> : <PackageMinus size={14} />}
+                            Nurašyti
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          onClick={() => handleUnpick(item)}
+                          disabled={unpickingId === item.id || finalizingId === item.id}
+                          className="shrink-0 text-xs font-medium text-ink-600/60 underline decoration-dotted hover:text-ink-900 disabled:opacity-50"
+                        >
+                          {unpickingId === item.id ? "Grąžinama…" : "Atgal"}
+                        </button>
+                      </div>
+                    )}
+                    <p className="mt-2 truncate text-sm font-medium text-ink-900">
+                      {item.devices?.name || "—"}{" "}
+                      <span className="font-mono text-xs text-ink-600/50">({item.devices?.ian})</span>
+                    </p>
+                    <p className="mt-1 text-xs text-ink-600/70">
+                      {item.quantity} vnt. · {item.picked_location || "—"}
+                    </p>
+                    {item.note && <p className="mt-1 truncate text-xs text-ink-600/60">Pastaba: {item.note}</p>}
+                    <p className="mt-1 truncate text-[11px] text-ink-600/40">
+                      {formatDate(item.picked_at)} · {item.profiles?.username || "—"}
+                    </p>
+                  </div>
+                ))}
+              </div>
+
+              <div className="hidden overflow-x-auto sm:block">
+                <table className="w-full text-left text-sm">
+                  <thead className="border-b border-ink-900/5 bg-ink-900/[0.02] text-xs uppercase tracking-wide text-ink-600/60">
+                    <tr>
+                      <th className="px-3 py-2.5 font-semibold">Prietaisas</th>
+                      <th className="px-3 py-2.5 font-semibold">Kiekis</th>
+                      <th className="px-3 py-2.5 font-semibold">Lokacija</th>
+                      <th className="px-3 py-2.5 font-semibold">Pastaba</th>
+                      <th className="px-3 py-2.5 font-semibold">Paimta</th>
+                      <th className="px-3 py-2.5 font-semibold">Kas</th>
+                      <th className="px-3 py-2.5 font-semibold">Būsena</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-ink-900/5">
+                    {picked.map((item) => (
+                      <tr key={item.id} className="hover:bg-ink-900/[0.015]">
+                        <td className="max-w-[220px] truncate px-3 py-2.5 text-ink-800">
+                          {item.devices?.name || "—"}{" "}
+                          <span className="font-mono text-xs text-ink-600/50">({item.devices?.ian})</span>
+                        </td>
+                        <td className="px-3 py-2.5 font-semibold text-ink-800">{item.quantity}</td>
+                        <td className="px-3 py-2.5 text-ink-800">{item.picked_location || "—"}</td>
+                        <td className="max-w-[220px] truncate px-3 py-2.5 text-ink-600/70">{item.note || "—"}</td>
+                        <td className="px-3 py-2.5 text-ink-600/70">{formatDate(item.picked_at)}</td>
+                        <td className="px-3 py-2.5 text-ink-600/70">{item.profiles?.username || "—"}</td>
+                        <td className="px-3 py-2.5">
+                          {item.writeoff_id ? (
+                            <span className="text-xs font-medium text-ink-600/50">Nurašyta</span>
+                          ) : (
+                            <div className="flex items-center gap-2">
+                              {canFinalize && (
+                                <button
+                                  type="button"
+                                  onClick={() => handleFinalize(item)}
+                                  disabled={finalizingId === item.id || unpickingId === item.id}
+                                  className="btn-secondary shrink-0 border-signal-amber/30 text-signal-amber hover:bg-signal-amber/10"
+                                >
+                                  {finalizingId === item.id ? <Loader2 size={14} className="animate-spin" /> : <PackageMinus size={14} />}
+                                  Nurašyti
+                                </button>
+                              )}
                               <button
                                 type="button"
-                                onClick={() => handleFinalize(item)}
-                                disabled={finalizingId === item.id || unpickingId === item.id}
-                                className="btn-secondary shrink-0 border-signal-amber/30 text-signal-amber hover:bg-signal-amber/10"
+                                onClick={() => handleUnpick(item)}
+                                disabled={unpickingId === item.id || finalizingId === item.id}
+                                className="text-xs font-medium text-ink-600/60 underline decoration-dotted hover:text-ink-900 disabled:opacity-50"
                               >
-                                {finalizingId === item.id ? <Loader2 size={14} className="animate-spin" /> : <PackageMinus size={14} />}
-                                Nurašyti
+                                {unpickingId === item.id ? "Grąžinama…" : "Atgal"}
                               </button>
-                            )}
-                            <button
-                              type="button"
-                              onClick={() => handleUnpick(item)}
-                              disabled={unpickingId === item.id || finalizingId === item.id}
-                              className="text-xs font-medium text-ink-600/60 underline decoration-dotted hover:text-ink-900 disabled:opacity-50"
-                            >
-                              {unpickingId === item.id ? "Grąžinama…" : "Atgal"}
-                            </button>
-                          </div>
-                        )}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+                            </div>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </>
           )}
         </div>
       </div>

@@ -83,7 +83,7 @@ function NavLinkItem({ to, label, icon: Icon, end, orientation }) {
                 ? "bg-white/10 text-white"
                 : "text-ink-600/70 hover:bg-white/5 hover:text-white"
             }`
-          : `flex flex-1 flex-col items-center gap-1 py-2 text-[11px] font-medium transition ${
+          : `flex flex-1 flex-col items-center gap-1 px-1 py-2 text-center text-[11px] font-medium leading-tight transition ${
               isActive ? "text-signal-orange" : "text-ink-600/60"
             }`
       }
@@ -126,7 +126,7 @@ function NavItems({ orientation, groups }) {
         <button
           type="button"
           onClick={() => setMoreOpen(true)}
-          className={`flex flex-1 flex-col items-center gap-1 py-2 text-[11px] font-medium transition ${
+          className={`flex flex-1 flex-col items-center gap-1 px-1 py-2 text-center text-[11px] font-medium leading-tight transition ${
             remainingActive ? "text-signal-orange" : "text-ink-600/60"
           }`}
         >

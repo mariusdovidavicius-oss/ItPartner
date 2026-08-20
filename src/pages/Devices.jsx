@@ -423,6 +423,9 @@ export default function Devices() {
                 <tr>
                   <th className="w-8 px-2 py-2.5"></th>
                   <th className="px-3 py-2.5 font-semibold">Prietaisas</th>
+                  {/* IAN — atskiras stulpelis tik nuo sm ir aukščiau (desktop/planšetė), kur vietos
+                      užtenka; telefone tas pats IAN rodomas kompaktiškai po pavadinimu (žr. žemiau). */}
+                  <th className="hidden px-3 py-2.5 font-semibold sm:table-cell">IAN</th>
                   {/* Sticky dešinieji stulpeliai — visada matomi be horizontalaus skrolinimo telefone,
                       net jei pavadinimo stulpelis priverčia lentelę pasidaryti platesnę už ekraną. */}
                   <th className="sticky right-10 z-10 bg-white px-3 py-2.5 font-semibold">Iš viso</th>
@@ -463,8 +466,9 @@ export default function Devices() {
                         </td>
                         <td className="max-w-[220px] px-3 py-2.5 text-ink-800">
                           <p className="truncate">{d.name || "—"}</p>
-                          <p className="truncate font-mono text-xs text-ink-600/50">{d.ian}</p>
+                          <p className="truncate font-mono text-xs text-ink-600/50 sm:hidden">{d.ian}</p>
                         </td>
+                        <td className="hidden max-w-[120px] truncate px-3 py-2.5 font-mono text-ink-900 sm:table-cell">{d.ian}</td>
                         <td className="sticky right-10 z-10 bg-white px-3 py-2.5 font-bold text-ink-900">{totalQuantity(d)}</td>
                         <td className="sticky right-0 z-10 w-10 bg-white px-1 py-2.5">
                           {canEdit && (
@@ -484,7 +488,7 @@ export default function Devices() {
 
                       {expanded && (
                         <tr className="bg-ink-900/[0.015]">
-                          <td colSpan={4} className="px-4 py-4">
+                          <td colSpan={5} className="px-4 py-4">
                             <DeviceDetail
                               device={d}
                               canEdit={canEdit}
