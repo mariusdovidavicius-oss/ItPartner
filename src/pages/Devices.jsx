@@ -806,7 +806,7 @@ function WriteoffModal({ device, onClose, onSave }) {
     <div className="fixed inset-0 z-30 flex items-end justify-center bg-ink-950/50 p-0 sm:items-center sm:p-4">
       <form
         onSubmit={submit}
-        className="w-full max-w-md rounded-t-2xl bg-white p-5 shadow-panel sm:rounded-2xl"
+        className="max-h-[85vh] w-full max-w-md overflow-y-auto rounded-t-2xl bg-white p-5 shadow-panel sm:rounded-2xl"
       >
         <div className="mb-4 flex items-center justify-between">
           <h2 className="text-base font-bold text-ink-900">Nurašyti prietaisą</h2>
@@ -968,7 +968,7 @@ function PickupModal({ device, onClose, onSave }) {
 
   return (
     <div className="fixed inset-0 z-30 flex items-end justify-center bg-ink-950/50 p-0 sm:items-center sm:p-4">
-      <form onSubmit={submit} className="w-full max-w-md rounded-t-2xl bg-white p-5 shadow-panel sm:rounded-2xl">
+      <form onSubmit={submit} className="max-h-[85vh] w-full max-w-md overflow-y-auto rounded-t-2xl bg-white p-5 shadow-panel sm:rounded-2xl">
         <div className="mb-4 flex items-center justify-between">
           <h2 className="text-base font-bold text-ink-900">Atsinešti</h2>
           <button type="button" onClick={onClose} className="rounded-lg p-1.5 hover:bg-ink-900/5">
@@ -1044,7 +1044,7 @@ function DeviceFormModal({ title, initial, onClose, onSave }) {
 
   return (
     <div className="fixed inset-0 z-30 flex items-end justify-center bg-ink-950/50 p-0 sm:items-center sm:p-4">
-      <form onSubmit={submit} className="w-full max-w-md rounded-t-2xl bg-white p-5 shadow-panel sm:rounded-2xl">
+      <form onSubmit={submit} className="max-h-[85vh] w-full max-w-md overflow-y-auto rounded-t-2xl bg-white p-5 shadow-panel sm:rounded-2xl">
         <div className="mb-4 flex items-center justify-between">
           <h2 className="text-base font-bold text-ink-900">{title}</h2>
           <button type="button" onClick={onClose} className="rounded-lg p-1.5 hover:bg-ink-900/5">

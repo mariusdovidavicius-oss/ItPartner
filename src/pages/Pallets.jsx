@@ -464,6 +464,7 @@ export default function Pallets() {
         ) : (
           <>
             <div className="overflow-hidden rounded-xl border border-ink-700/10">
+              <div className="overflow-x-auto">
               <table className="w-full text-left text-sm">
                 <thead className="border-b border-ink-900/5 bg-ink-900/[0.02] text-xs uppercase tracking-wide text-ink-600/60">
                   <tr>
@@ -525,6 +526,7 @@ export default function Pallets() {
                   })}
                 </tbody>
               </table>
+              </div>
             </div>
 
             <div className="flex flex-wrap items-center justify-between gap-3 border-t border-ink-900/5 pt-4">
@@ -608,6 +610,7 @@ export default function Pallets() {
         ) : (
           <>
             <div className="overflow-hidden rounded-xl border border-ink-700/10">
+              <div className="overflow-x-auto">
               <table className="w-full text-left text-sm">
                 <thead className="border-b border-ink-900/5 bg-ink-900/[0.02] text-xs uppercase tracking-wide text-ink-600/60">
                   <tr>
@@ -663,6 +666,7 @@ export default function Pallets() {
                   ))}
                 </tbody>
               </table>
+              </div>
             </div>
 
             <div className="flex flex-wrap items-center justify-between gap-3 border-t border-ink-900/5 pt-4">
