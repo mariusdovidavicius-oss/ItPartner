@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import { NavLink, Outlet, useLocation } from "react-router-dom";
 import {
-  ScanLine, PackageSearch, Boxes, ChevronDown, Wrench, PackageMinus, BarChart3, Users, LogOut, Cpu, FileUp,
+  ScanLine, Boxes, ChevronDown, Wrench, PackageMinus, BarChart3, Users, LogOut, Cpu, FileUp,
   ClipboardList, MoreHorizontal, X
 } from "lucide-react";
 import { useAuth } from "../lib/AuthProvider";
@@ -274,16 +274,11 @@ export default function Layout() {
       <div className="lg:flex lg:flex-1">
         {/* Desktop / tablet sidebar */}
         <aside className="hidden lg:flex lg:w-64 lg:flex-col lg:gap-1 bg-ink-950 px-4 py-6">
-          <div className="mb-6 flex items-center gap-2 px-2">
-            <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-signal-orange">
-              <PackageSearch size={18} className="text-white" strokeWidth={2.5} />
+          <div className="mb-6 flex items-center gap-2.5 px-2">
+            <div className="flex shrink-0 items-center justify-center rounded-lg bg-white px-2 py-1.5">
+              <img src="/itp-logo.png" alt="IT Partner" className="h-6 w-auto" />
             </div>
-            <div>
-              <p className="font-mono text-[11px] uppercase tracking-widest text-signal-orange">
-                IAN sistema
-              </p>
-              <p className="text-sm font-semibold text-white">Sandėlio valdymas</p>
-            </div>
+            <p className="text-sm font-semibold text-white">Sandėlio valdymas</p>
           </div>
           <nav className="flex flex-1 flex-col gap-1">
             <NavItems orientation="vertical" groups={navGroups} />
@@ -308,10 +303,8 @@ export default function Layout() {
 
         {/* Content */}
         <div className="flex-1 pb-20 lg:pb-0">
-          <header className="flex items-center gap-2 border-b border-ink-900/5 bg-white/80 px-4 py-3.5 backdrop-blur lg:hidden">
-            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-signal-orange">
-              <PackageSearch size={16} className="text-white" strokeWidth={2.5} />
-            </div>
+          <header className="flex items-center gap-2.5 border-b border-ink-900/5 bg-white/80 px-4 py-3 backdrop-blur lg:hidden">
+            <img src="/itp-logo.png" alt="IT Partner" className="h-7 w-auto" />
             <p className="text-sm font-semibold text-ink-900">Sandėlio valdymas</p>
           </header>
 
