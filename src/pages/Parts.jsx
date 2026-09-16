@@ -587,7 +587,10 @@ export default function Parts() {
 
                                 <div>
                                   <p className="mb-1 text-xs font-semibold text-ink-600/70">Suderinami modeliai</p>
-                                  <p className="text-sm text-ink-800">{p.compatible_models || "—"}</p>
+                                  {/* Kai laukas tuščias, priedas laikomas suderinamu bent su savo pagrindiniu
+                                      modeliu — tuščias langelis rodė "—", nors "PHD 170 D2" priedas akivaizdžiai
+                                      tinka "PHD 170 D2" modeliui. */}
+                                  <p className="text-sm text-ink-800">{p.compatible_models || p.main_model || "—"}</p>
                                 </div>
 
                                 <div>
