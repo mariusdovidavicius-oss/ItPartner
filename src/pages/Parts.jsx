@@ -566,6 +566,11 @@ export default function Parts() {
 
                               <div className="space-y-3">
                                 <div>
+                                  <p className="mb-1 text-xs font-semibold text-ink-600/70">Pavadinimas</p>
+                                  <p className="text-sm text-ink-800">{p.name || "—"}</p>
+                                </div>
+
+                                <div>
                                   <p className="mb-1 text-xs font-semibold text-ink-600/70">Suderinami modeliai</p>
                                   <p className="text-sm text-ink-800">{p.compatible_models || "—"}</p>
                                 </div>
