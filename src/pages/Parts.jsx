@@ -77,7 +77,14 @@ export default function Parts() {
       );
     });
 
-    if (locationFilter !== "") query = query.eq("location", locationFilter);
+    // Lokacijos filtras rodo tik "dėžės" numerį (pvz. "8"), bet lentelėje po
+    // ta dėže gali būti pavienės mažos dėžutės eilutės ("8 (-1-)", "8 (-2-)")
+    // — todėl atitinka arba tikslią dėžės reikšmę, arba "dėžė + tarpas + …"
+    // pradžią (NE tiesiog prefiksą, kad "8" neatitiktų "80").
+    if (locationFilter !== "") {
+      const esc = locationFilter.replace(/[%,()]/g, "");
+      query = query.or(`location.eq.${esc},location.ilike.${esc} %`);
+    }
     if (stockFilter === "out") query = query.eq("stock_level", "out");
     if (stockFilter === "low") query = query.eq("stock_level", "low");
 
@@ -115,8 +122,10 @@ export default function Parts() {
 
   async function loadLocationOptions() {
     const { data } = await supabase.from("parts").select("location").not("location", "is", null);
-    const set = new Set((data || []).map((r) => r.location));
-    // "numeric" — dėžės "42 (-7-)" rikiuojasi tarp "41" ir "43", ne raidžių tvarka.
+    // Filtras grupuoja pagal dėžės numerį — "8 (-1-)" ir "8 (-2-)" į vieną
+    // pasirinkimą "8" (pirmas žodis prieš tarpą), ne kiekvieną mažą dėžutę atskirai.
+    const set = new Set((data || []).map((r) => String(r.location).trim().split(/\s+/)[0]).filter(Boolean));
+    // "numeric" — dėžė "42" rikiuojasi tarp "41" ir "43", ne raidžių tvarka.
     setLocationOptions([...set].sort((a, b) => a.localeCompare(b, undefined, { numeric: true })));
   }
 
