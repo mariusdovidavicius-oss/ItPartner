@@ -51,6 +51,7 @@ export default function Parts() {
     return v === "low" || v === "out" ? v : "all";
   }); // all | low | out
   const [locationOptions, setLocationOptions] = useState([]);
+  const [onlineStoreFilter, setOnlineStoreFilter] = useState("all"); // all | yes | no
   const [actionError, setActionError] = useState("");
 
   // Paieškos tekstą debounce'iname, kad serverio užklausa nebūtų siunčiama
@@ -87,6 +88,8 @@ export default function Parts() {
     }
     if (stockFilter === "out") query = query.eq("stock_level", "out");
     if (stockFilter === "low") query = query.eq("stock_level", "low");
+    if (onlineStoreFilter === "yes") query = query.eq("online_store", true);
+    if (onlineStoreFilter === "no") query = query.eq("online_store", false);
 
     return query.order("location", { ascending: true });
   }
@@ -144,7 +147,7 @@ export default function Parts() {
   // tame pačiame React commit'e ir nusiųsti užklausą su offset'u už rezultatų
   // ribų (tuščias atsakymas, nors atitikmenų yra). Todėl abu veiksmai
   // sujungti į vieną efektą, sekantį filtrų "parašą" per ref.
-  const filterKey = `${debouncedSearch}|${locationFilter}|${stockFilter}|${pageSize}`;
+  const filterKey = `${debouncedSearch}|${locationFilter}|${stockFilter}|${onlineStoreFilter}|${pageSize}`;
   const prevFilterKey = useRef(filterKey);
   useEffect(() => {
     if (filterKey !== prevFilterKey.current) {
@@ -410,10 +413,22 @@ export default function Parts() {
             <option value="out">Tik baigęsis (0)</option>
           </select>
         </label>
-        {(locationFilter !== "" || stockFilter !== "all") && (
+        <label className="flex shrink-0 items-center gap-2 text-xs font-medium text-ink-600/70">
+          El. p-vė
+          <select
+            value={onlineStoreFilter}
+            onChange={(e) => setOnlineStoreFilter(e.target.value)}
+            className="input-field w-auto py-1.5 text-sm"
+          >
+            <option value="all">Visi</option>
+            <option value="yes">Taip</option>
+            <option value="no">Ne</option>
+          </select>
+        </label>
+        {(locationFilter !== "" || stockFilter !== "all" || onlineStoreFilter !== "all") && (
           <button
             type="button"
-            onClick={() => { setLocationFilter(""); setStockFilter("all"); }}
+            onClick={() => { setLocationFilter(""); setStockFilter("all"); setOnlineStoreFilter("all"); }}
             className="text-xs font-medium text-ink-600/60 underline decoration-dotted hover:text-ink-900"
           >
             Išvalyti filtrus
@@ -430,7 +445,7 @@ export default function Parts() {
           <div className="flex flex-col items-center gap-2 py-10 text-center">
             <Boxes className="text-ink-600/30" size={24} />
             <p className="text-sm text-ink-600/60">
-              {totalCount === 0 && debouncedSearch.trim() === "" && locationFilter === "" && stockFilter === "all"
+              {totalCount === 0 && debouncedSearch.trim() === "" && locationFilter === "" && stockFilter === "all" && onlineStoreFilter === "all"
                 ? "Priedų dar nėra — importuokite juos per /importas."
                 : "Pagal paiešką nieko nerasta."}
             </p>
