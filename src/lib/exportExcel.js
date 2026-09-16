@@ -116,7 +116,9 @@ export async function exportPartsToExcel(partsList, filename) {
     cell.border = fullBorder;
   });
 
-  const sorted = [...partsList].sort((a, b) => (a.location || 0) - (b.location || 0));
+  const sorted = [...partsList].sort((a, b) =>
+    String(a.location || "").localeCompare(String(b.location || ""), undefined, { numeric: true })
+  );
   sorted.forEach((p) => {
     const row = sheet.addRow([
       p.location ?? "",

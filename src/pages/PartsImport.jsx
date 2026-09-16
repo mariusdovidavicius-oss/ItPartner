@@ -24,15 +24,14 @@ function toRecord(row, columnMap) {
     const idx = columnMap[key];
     return idx === "" || idx === undefined ? "" : row[Number(idx)];
   }
-  const locationRaw = String(cell("location") ?? "").trim();
-  const location = locationRaw ? Number(locationRaw) : NaN;
+  const location = String(cell("location") ?? "").trim() || null;
   const part_code = String(cell("part_code") ?? "").trim();
   const quantityRaw = String(cell("quantity") ?? "").trim();
   const quantity = quantityRaw ? Number(quantityRaw) : 0;
   const online_store = String(cell("online_store") ?? "").trim().toUpperCase() === "TAIP";
 
   return {
-    location: Number.isFinite(location) ? location : null,
+    location,
     main_model: String(cell("main_model") ?? "").trim() || null,
     part_code,
     name: String(cell("name") ?? "").trim() || null,

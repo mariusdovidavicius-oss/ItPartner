@@ -765,7 +765,7 @@ $$;
 -- ------------------------------------------------------------
 create table if not exists public.parts (
   id                 uuid primary key default gen_random_uuid(),
-  location           integer not null,                -- "Lokacija"
+  location           text not null,                    -- "Lokacija" (laisvas tekstas, pvz. "42 (-7-)")
   main_model         text,                             -- "Pagrindinis Modelis"
   part_code          text not null,                    -- "Detalės Kodas" — text, nes formatas nevienodas (skaičius arba "352083/ZU21")
   name               text,                             -- "Pavadinimas"
@@ -957,7 +957,7 @@ begin
 
   insert into public.parts (location, main_model, part_code, name, quantity, online_store, compatible_models)
   select
-    (r->>'location')::integer,
+    r->>'location',
     nullif(r->>'main_model', ''),
     r->>'part_code',
     nullif(r->>'name', ''),

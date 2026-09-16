@@ -77,7 +77,7 @@ export default function Parts() {
       );
     });
 
-    if (locationFilter !== "") query = query.eq("location", Number(locationFilter));
+    if (locationFilter !== "") query = query.eq("location", locationFilter);
     if (stockFilter === "out") query = query.eq("stock_level", "out");
     if (stockFilter === "low") query = query.eq("stock_level", "low");
 
@@ -116,7 +116,8 @@ export default function Parts() {
   async function loadLocationOptions() {
     const { data } = await supabase.from("parts").select("location").not("location", "is", null);
     const set = new Set((data || []).map((r) => r.location));
-    setLocationOptions([...set].sort((a, b) => a - b));
+    // "numeric" — dėžės "42 (-7-)" rikiuojasi tarp "41" ir "43", ne raidžių tvarka.
+    setLocationOptions([...set].sort((a, b) => a.localeCompare(b, undefined, { numeric: true })));
   }
 
   // load() naudoja debouncedSearch/locationFilter/stockFilter/page/pageSize
@@ -261,7 +262,7 @@ export default function Parts() {
         main_model: form.main_model.trim() || null,
         name: form.name.trim() || null,
         part_code: form.part_code.trim(),
-        location: Math.round(Number(form.location)) || 0,
+        location: form.location.trim(),
         min_quantity: form.min_quantity === "" ? null : Math.max(0, Math.round(Number(form.min_quantity)) || 0),
         compatible_models: form.compatible_models.trim() || null,
         online_store: form.online_store
@@ -276,7 +277,7 @@ export default function Parts() {
       main_model: form.main_model.trim() || null,
       name: form.name.trim() || null,
       part_code: form.part_code.trim(),
-      location: Math.round(Number(form.location)) || 0,
+      location: form.location.trim(),
       quantity: Math.max(0, Math.round(Number(form.quantity)) || 0),
       min_quantity: form.min_quantity === "" ? null : Math.max(0, Math.round(Number(form.min_quantity)) || 0),
       compatible_models: form.compatible_models.trim() || null,
@@ -921,7 +922,7 @@ function PartFormModal({ title, initial, onClose, onSave, showQuantity = false }
     main_model: initial?.main_model || "",
     name: initial?.name || "",
     part_code: initial?.part_code || "",
-    location: initial?.location ?? 0,
+    location: initial?.location ?? "",
     quantity: initial?.quantity ?? 0,
     min_quantity: initial?.min_quantity ?? "",
     compatible_models: initial?.compatible_models || "",
@@ -983,10 +984,9 @@ function PartFormModal({ title, initial, onClose, onSave, showQuantity = false }
           <div>
             <label className="mb-1 block text-xs font-semibold text-ink-600/70">Lokacija</label>
             <input
-              type="number"
-              min={0}
               value={form.location}
               onChange={(e) => setForm({ ...form, location: e.target.value })}
+              placeholder="pvz. 42 (-7-)"
               className="input-field"
               required
             />
