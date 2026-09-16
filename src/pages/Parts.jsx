@@ -17,6 +17,15 @@ const PAGE_SIZE_OPTIONS = [10, 25, 50, 100];
 const DEFAULT_LOW_STOCK_THRESHOLD = 3;
 const SEARCH_DEBOUNCE_MS = 300;
 
+// Pagrindinis modelis visada suderinamas su savimi, todėl visada rodomas
+// suderinamų modelių sąraše (be dublikatų), net kai "compatible_models"
+// jau turi kitų modelių.
+function formatCompatibleModels(part) {
+  const others = (part.compatible_models || "").split(",").map((m) => m.trim()).filter(Boolean);
+  const all = [part.main_model, ...others].filter(Boolean);
+  return [...new Set(all)].join(", ");
+}
+
 export default function Parts() {
   const { user, hasPermission } = useAuth();
   const canEdit = hasPermission("edit");
@@ -587,10 +596,10 @@ export default function Parts() {
 
                                 <div>
                                   <p className="mb-1 text-xs font-semibold text-ink-600/70">Suderinami modeliai</p>
-                                  {/* Kai laukas tuščias, priedas laikomas suderinamu bent su savo pagrindiniu
-                                      modeliu — tuščias langelis rodė "—", nors "PHD 170 D2" priedas akivaizdžiai
-                                      tinka "PHD 170 D2" modeliui. */}
-                                  <p className="text-sm text-ink-800">{p.compatible_models || p.main_model || "—"}</p>
+                                  {/* Pagrindinis modelis visada suderinamas su savimi, todėl visada įtraukiamas
+                                      į sąrašą (be dublikatų) — nesvarbu, ar "Suderinami modeliai" laukas tuščias,
+                                      ar jame jau yra KITŲ modelių. */}
+                                  <p className="text-sm text-ink-800">{formatCompatibleModels(p) || "—"}</p>
                                 </div>
 
                                 <div>
