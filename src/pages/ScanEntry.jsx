@@ -13,8 +13,8 @@ import { escapeLike, formatDateTime } from "../lib/format";
 // Reikšmės TIKSLIAI atitinka jau naudojamas catalog.manufacturer/item_type
 // reikšmes, kad naujas įrašas patektų į tą pačią destination grupavimo logiką.
 const MANUFACTURER_TYPES = {
-  Grizzly: ["Prietaisai", "Bat"],
-  Kompernass: ["Prietaisai", "Prietaisai2", "Bat"]
+  Grizzly: ["Prietaisas", "Bat"],
+  Kompernass: ["Prietaisas", "Prietaisas2", "Prietaisas3", "Bat"]
 };
 
 function formatPalletLabel(pallet) {
