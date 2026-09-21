@@ -263,7 +263,7 @@ Pagalbinės SQL funkcijos `is_admin(uid)` ir `has_permission(uid, perm)` (abi `S
 | `user_id`     | uuid (FK)   | Nurašiusio vartotojo nuoroda į `profiles.id` (`on delete set null`)      |
 | `quantity`    | integer     | Nurašytas kiekis (> 0)                                                   |
 | `reason_type` | text        | Priežastis: `parduota` / `remontui` / `kita`                             |
-| `price`       | numeric     | Kaina, jei `reason_type = 'parduota'`                                    |
+| `price`       | numeric     | Kaina, jei `reason_type = 'parduota'` — suma už VISĄ nurašomą kiekį, ne kaina už vienetą (statistika ją sumuoja tiesiogiai, be dauginimo iš kiekio)                                    |
 | `rma`         | text        | RMA numeris, jei `reason_type = 'remontui'`                              |
 | `reason`      | text        | Laisvas tekstas, jei `reason_type = 'kita'`                              |
 | `created_at`  | timestamptz | Nurašymo laikas                                                          |
@@ -321,7 +321,7 @@ Tos pačios keturios teisės kaip `parts` modulyje (`view`, `edit`, `delete`, `i
 | `user_id`     | uuid (FK)   | Nurašiusio vartotojo nuoroda į `profiles.id` (`on delete set null`)      |
 | `quantity`    | integer     | Nurašytas kiekis (> 0)                                                   |
 | `reason_type` | text        | Priežastis: `parduota` / `remontui` / `garantija` / `kita`               |
-| `price`       | numeric     | Kaina, jei `reason_type = 'parduota'`                                    |
+| `price`       | numeric     | Kaina, jei `reason_type = 'parduota'` — suma už VISĄ nurašomą kiekį, ne kaina už vienetą (statistika ją sumuoja tiesiogiai, be dauginimo iš kiekio)                                    |
 | `rma`         | text        | RMA numeris, jei `reason_type = 'remontui'`                              |
 | `reason`      | text        | Laisvas tekstas — PRIVALOMAS jei `reason_type = 'kita'`, NEBŪTINAS jei `reason_type = 'garantija'` |
 | `created_at`  | timestamptz | Nurašymo laikas                                                          |

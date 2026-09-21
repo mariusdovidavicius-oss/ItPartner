@@ -859,7 +859,7 @@ function WriteoffModal({ device, onClose, onSave }) {
 
           {reasonType === "parduota" && (
             <div>
-              <label className="mb-1 block text-xs font-semibold text-ink-600/70">Kaina (€)</label>
+              <label className="mb-1 block text-xs font-semibold text-ink-600/70">Kaina už visą nurašomą kiekį (€)</label>
               <input
                 type="number"
                 min={0}
@@ -869,6 +869,9 @@ function WriteoffModal({ device, onClose, onSave }) {
                 className="input-field"
                 required
               />
+              <p className="mt-1 text-xs text-ink-600/50">
+                Bendra suma už {Number(quantity) || 0} vnt., ne kaina už vienetą.
+              </p>
             </div>
           )}
 
