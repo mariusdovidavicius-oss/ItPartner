@@ -1,15 +1,15 @@
-import { useEffect, useRef, useState } from "react";
+import { useState } from "react";
 import { Link } from "react-router-dom";
 import {
-  Boxes, PackageX, AlertTriangle, PackageMinus, Coins, Wrench, HelpCircle, Loader2, ShieldAlert, ShieldCheck, Cpu, MapPin
+  Boxes, PackageX, AlertTriangle, PackageMinus, Coins, Wrench, HelpCircle, Loader2, ShieldAlert, ShieldCheck, Cpu, MapPin,
+  AlertCircle
 } from "lucide-react";
 import { supabase } from "../lib/supabaseClient";
 import { useAuth } from "../lib/AuthProvider";
 import { PERIOD_OPTIONS, periodStart } from "../lib/period";
-
-function emptyReasonBucket() {
-  return { count: 0, qty: 0 };
-}
+import { useLiveQuery } from "../lib/useLiveQuery";
+import { DEVICE_REASON_KEYS, PART_REASON_KEYS, normalizeWriteoffStats, statsErrorMessage } from "../lib/stats";
+import ReorderExportButton from "../components/ReorderExportButton";
 
 // "to" nebūtinas — kai jo nėra (pvz. bendros sumos, kurių filtruoti
 // negalima, tokios kaip "Vienetų iš viso"), plytelė lieka paprasta
@@ -34,6 +34,46 @@ function StatTile({ icon: Icon, label, value, accent, to }) {
     );
   }
   return <div className="panel flex items-center gap-3 p-4">{content}</div>;
+}
+
+// Klaidos juosta. "stale" — jau turime senesnių duomenų, kurie lieka rodomi po
+// juosta; be jų (pirmas užkrovimas nepavyko) rodoma tik juosta.
+function StatsError({ error, onRetry, stale = false }) {
+  return (
+    <div className="flex items-start gap-2 rounded-xl border border-signal-red/20 bg-signal-red/5 p-3.5 text-sm text-signal-red">
+      <AlertCircle size={16} className="mt-0.5 shrink-0" />
+      <span className="flex-1">
+        {stale ? "Nepavyko atnaujinti statistikos — rodomi ankstesni duomenys." : "Nepavyko įkelti statistikos."}{" "}
+        <span className="opacity-80">{statsErrorMessage(error)}</span>
+      </span>
+      <button type="button" onClick={onRetry} className="shrink-0 font-semibold underline decoration-dotted">
+        Bandyti dar kartą
+      </button>
+    </div>
+  );
+}
+
+// Bendras kraunimo/klaidų apvalkalas moduliams: spinner'is TIK pirmą kartą;
+// vėliau (laikotarpio keitimas, realtime) senas turinys lieka ir tik
+// pritemsta, todėl nemirga ir slinkimas nešoka.
+function PanelShell({ query, children }) {
+  const { data, error, loading, refreshing, reload } = query;
+
+  if (loading) {
+    return (
+      <div className="flex justify-center py-10 text-ink-600/50">
+        <Loader2 className="animate-spin" size={20} />
+      </div>
+    );
+  }
+  if (!data) return <StatsError error={error} onRetry={reload} />;
+
+  return (
+    <div className="space-y-5" aria-busy={refreshing}>
+      {error && <StatsError error={error} onRetry={reload} stale />}
+      <div className={`space-y-5 transition-opacity ${refreshing ? "opacity-60" : ""}`}>{children(data)}</div>
+    </div>
+  );
 }
 
 // Bendras nurašymų statistikos blokas (kiekis pagal priežastį, pajamos,
@@ -84,11 +124,14 @@ function WriteoffStatsSection({ period, stats, topLabel, showWarranty = false, l
           <p className="py-4 text-center text-sm text-ink-600/50">Nurašymų per pasirinktą laikotarpį nebuvo.</p>
         ) : (
           <ul className="space-y-3">
-            {stats.topItems.map((p, i) => {
+            {stats.topItems.map((p) => {
               const bar = (
                 <>
                   <div className="mb-1 flex items-center justify-between gap-2 text-sm">
-                    <span className="truncate text-ink-800">{p.label}</span>
+                    <span className="min-w-0 truncate text-ink-800" title={p.sub ? `${p.label} — ${p.sub}` : p.label}>
+                      {p.label}
+                      {p.sub && <span className="ml-2 text-xs text-ink-600/50">{p.sub}</span>}
+                    </span>
                     <span className="shrink-0 font-semibold text-ink-900">{p.qty} vnt.</span>
                   </div>
                   <div className="h-2 w-full overflow-hidden rounded-full bg-ink-900/5">
@@ -99,18 +142,16 @@ function WriteoffStatsSection({ period, stats, topLabel, showWarranty = false, l
                   </div>
                 </>
               );
+              // Paieška pagal kodą (priedų kodas / prietaiso IAN), ne pagal
+              // pavadinimą — kodas tikslesnis, kai skirtingų modelių pavadinimai sutampa.
               return (
-                <li key={i}>
-                  {p.label && p.label !== "—" ? (
-                    <Link
-                      to={`${itemsPath}?q=${encodeURIComponent(p.label)}`}
-                      className="-m-1 block rounded-lg p-1 transition-colors hover:bg-ink-900/[0.03]"
-                    >
-                      {bar}
-                    </Link>
-                  ) : (
-                    bar
-                  )}
+                <li key={`${p.code}|${p.label}`}>
+                  <Link
+                    to={`${itemsPath}?q=${encodeURIComponent(p.code || p.label)}`}
+                    className="-m-1 block rounded-lg p-1 transition-colors hover:bg-ink-900/[0.03]"
+                  >
+                    {bar}
+                  </Link>
                 </li>
               );
             })}
@@ -121,247 +162,97 @@ function WriteoffStatsSection({ period, stats, topLabel, showWarranty = false, l
   );
 }
 
+// Abu skydeliai skaito paruoštus agregatus iš DB funkcijų (žr.
+// supabase/migrate_add_stats_functions.sql) — jokio eilučių tempimo į
+// naršyklę, todėl sumos tikslios ir kai įrašų daugiau nei 1000.
 function PartsStatsPanel({ period }) {
-  const [loading, setLoading] = useState(true);
-  const [overview, setOverview] = useState({ totalParts: 0, totalUnits: 0, lowCount: 0, outCount: 0 });
-  const [writeoffStats, setWriteoffStats] = useState({
-    totalQty: 0,
-    revenue: 0,
-    byReason: { parduota: emptyReasonBucket(), remontui: emptyReasonBucket(), kita: emptyReasonBucket() },
-    topItems: []
-  });
-
-  async function loadOverview() {
-    const [{ count: totalParts }, { data: rows }] = await Promise.all([
-      supabase.from("parts").select("id", { count: "exact", head: true }),
-      supabase.from("parts").select("quantity, stock_level").range(0, 9999)
-    ]);
-    const list = rows || [];
-    setOverview({
-      totalParts: totalParts ?? 0,
-      totalUnits: list.reduce((sum, r) => sum + (r.quantity || 0), 0),
-      lowCount: list.filter((r) => r.stock_level === "low").length,
-      outCount: list.filter((r) => r.stock_level === "out").length
-    });
-  }
-
-  // Skaičiuojama tik iš AKTYVIŲ (neatšauktų) nurašymų — atšaukti (undone_at
-  // nustatytas) neturi būti įskaičiuoti į sumas/statistiką, nes kiekis jau
-  // grąžintas atgal į parts.quantity (žr. undo_writeoff() migracijoje).
-  async function loadWriteoffStats() {
-    let query = supabase
-      .from("parts_writeoffs")
-      .select("quantity, reason_type, price, part_id, parts(name, part_code)")
-      .is("undone_at", null)
-      .range(0, 4999);
-    const start = periodStart(period);
-    if (start) query = query.gte("created_at", start);
-    const { data } = await query;
-    const rows = data || [];
-
-    const byReason = { parduota: emptyReasonBucket(), remontui: emptyReasonBucket(), kita: emptyReasonBucket() };
-    const byItem = new Map();
-    let totalQty = 0;
-    let revenue = 0;
-
-    rows.forEach((w) => {
-      const qty = w.quantity || 0;
-      totalQty += qty;
-      const bucket = byReason[w.reason_type] || (byReason[w.reason_type] = emptyReasonBucket());
-      bucket.count += 1;
-      bucket.qty += qty;
-      if (w.reason_type === "parduota" && w.price != null) revenue += Number(w.price);
-
-      const label = w.parts?.name || w.parts?.part_code || "—";
-      const prev = byItem.get(w.part_id);
-      if (prev) prev.qty += qty;
-      else byItem.set(w.part_id, { label, qty });
-    });
-
-    const topItems = [...byItem.values()].sort((a, b) => b.qty - a.qty).slice(0, 5);
-    setWriteoffStats({ totalQty, revenue, byReason, topItems });
-  }
-
-  async function load() {
-    setLoading(true);
-    await Promise.all([loadOverview(), loadWriteoffStats()]);
-    setLoading(false);
-  }
-
-  const loadRef = useRef(load);
-  useEffect(() => {
-    loadRef.current = load;
-  });
-
-  useEffect(() => {
-    load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [period]);
-
-  useEffect(() => {
-    const channel = supabase
-      .channel("parts-stats-realtime")
-      .on("postgres_changes", { event: "*", schema: "public", table: "parts" }, () => loadRef.current())
-      .on("postgres_changes", { event: "*", schema: "public", table: "parts_writeoffs" }, () => loadRef.current())
-      .subscribe();
-    return () => supabase.removeChannel(channel);
-  }, []);
-
-  if (loading) {
-    return (
-      <div className="flex justify-center py-10 text-ink-600/50">
-        <Loader2 className="animate-spin" size={20} />
-      </div>
-    );
-  }
+  const query = useLiveQuery(
+    async () => {
+      const { data, error } = await supabase.rpc("parts_stats", { p_from: periodStart(period) });
+      if (error) throw error;
+      return data;
+    },
+    { deps: [period], tables: ["parts", "parts_writeoffs"], channel: "parts-stats-realtime" }
+  );
 
   return (
-    <>
-      <div>
-        <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-ink-600/50">Sandėlio būklė dabar</p>
-        <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-          <StatTile icon={Boxes} label="Priedų įrašų" value={overview.totalParts} accent="bg-ink-700" />
-          <StatTile icon={Boxes} label="Vienetų iš viso" value={overview.totalUnits} accent="bg-signal-blue" />
-          <StatTile icon={AlertTriangle} label="Mažo likučio" value={overview.lowCount} accent="bg-signal-amber" to="/priedai?likutis=low" />
-          <StatTile icon={PackageX} label="Pasibaigę" value={overview.outCount} accent="bg-signal-red" to="/priedai?likutis=out" />
-        </div>
-      </div>
+    <PanelShell query={query}>
+      {(data) => {
+        const o = data.overview;
+        const stats = normalizeWriteoffStats(data, PART_REASON_KEYS, (t) => t.model || "");
+        return (
+          <>
+            <div>
+              <div className="mb-2 flex items-center justify-between gap-2">
+                <p className="text-xs font-semibold uppercase tracking-wide text-ink-600/50">Sandėlio būklė dabar</p>
+                <ReorderExportButton kind="parts" count={Number(o.low_count) + Number(o.out_count)} />
+              </div>
+              <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+                <StatTile icon={Boxes} label="Priedų įrašų" value={Number(o.total_parts)} accent="bg-ink-700" />
+                <StatTile icon={Boxes} label="Vienetų iš viso" value={Number(o.total_units)} accent="bg-signal-blue" />
+                <StatTile icon={AlertTriangle} label="Mažo likučio" value={Number(o.low_count)} accent="bg-signal-amber" to="/priedai?likutis=low" />
+                <StatTile icon={PackageX} label="Pasibaigę" value={Number(o.out_count)} accent="bg-signal-red" to="/priedai?likutis=out" />
+              </div>
+            </div>
 
-      <WriteoffStatsSection
-        period={period}
-        stats={writeoffStats}
-        topLabel="TOP 5 dažniausiai nurašomų priedų"
-        listPath="/priedai/nurasymai"
-        itemsPath="/priedai"
-      />
-    </>
+            <WriteoffStatsSection
+              period={period}
+              stats={stats}
+              topLabel="TOP 5 dažniausiai nurašomų priedų"
+              listPath="/priedai/nurasymai"
+              itemsPath="/priedai"
+            />
+          </>
+        );
+      }}
+    </PanelShell>
   );
 }
 
 function DeviceStatsPanel({ period }) {
-  const [loading, setLoading] = useState(true);
-  const [overview, setOverview] = useState({ totalDevices: 0, totalUnits: 0, lowCount: 0, outCount: 0, locationCount: 0 });
-  const [writeoffStats, setWriteoffStats] = useState({
-    totalQty: 0,
-    revenue: 0,
-    byReason: {
-      parduota: emptyReasonBucket(), remontui: emptyReasonBucket(),
-      garantija: emptyReasonBucket(), kita: emptyReasonBucket()
+  const query = useLiveQuery(
+    async () => {
+      const { data, error } = await supabase.rpc("device_stats", { p_from: periodStart(period) });
+      if (error) throw error;
+      return data;
     },
-    topItems: []
-  });
-
-  async function loadOverview() {
-    const [{ count: totalDevices }, { data: totals }, { count: locationCount }] = await Promise.all([
-      supabase.from("devices").select("id", { count: "exact", head: true }),
-      supabase.from("device_totals").select("total_quantity, stock_level").range(0, 9999),
-      supabase.from("device_stock").select("id", { count: "exact", head: true })
-    ]);
-    const list = totals || [];
-    setOverview({
-      totalDevices: totalDevices ?? 0,
-      totalUnits: list.reduce((sum, r) => sum + (r.total_quantity || 0), 0),
-      lowCount: list.filter((r) => r.stock_level === "low").length,
-      outCount: list.filter((r) => r.stock_level === "out").length,
-      locationCount: locationCount ?? 0
-    });
-  }
-
-  // Skaičiuojama tik iš AKTYVIŲ (neatšauktų) nurašymų — ta pati logika kaip
-  // priedų statistikoje (žr. loadWriteoffStats PartsStatsPanel viduje).
-  async function loadWriteoffStats() {
-    let query = supabase
-      .from("device_writeoffs")
-      .select("quantity, reason_type, price, device_id, device_name, device_ian")
-      .is("undone_at", null)
-      .range(0, 4999);
-    const start = periodStart(period);
-    if (start) query = query.gte("created_at", start);
-    const { data } = await query;
-    const rows = data || [];
-
-    const byReason = {
-      parduota: emptyReasonBucket(), remontui: emptyReasonBucket(),
-      garantija: emptyReasonBucket(), kita: emptyReasonBucket()
-    };
-    const byItem = new Map();
-    let totalQty = 0;
-    let revenue = 0;
-
-    rows.forEach((w) => {
-      const qty = w.quantity || 0;
-      totalQty += qty;
-      const bucket = byReason[w.reason_type] || (byReason[w.reason_type] = emptyReasonBucket());
-      bucket.count += 1;
-      bucket.qty += qty;
-      if (w.reason_type === "parduota" && w.price != null) revenue += Number(w.price);
-
-      const label = w.device_name || w.device_ian || "—";
-      const prev = byItem.get(w.device_id);
-      if (prev) prev.qty += qty;
-      else byItem.set(w.device_id, { label, qty });
-    });
-
-    const topItems = [...byItem.values()].sort((a, b) => b.qty - a.qty).slice(0, 5);
-    setWriteoffStats({ totalQty, revenue, byReason, topItems });
-  }
-
-  async function load() {
-    setLoading(true);
-    await Promise.all([loadOverview(), loadWriteoffStats()]);
-    setLoading(false);
-  }
-
-  const loadRef = useRef(load);
-  useEffect(() => {
-    loadRef.current = load;
-  });
-
-  useEffect(() => {
-    load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [period]);
-
-  useEffect(() => {
-    const channel = supabase
-      .channel("device-stats-realtime")
-      .on("postgres_changes", { event: "*", schema: "public", table: "devices" }, () => loadRef.current())
-      .on("postgres_changes", { event: "*", schema: "public", table: "device_stock" }, () => loadRef.current())
-      .on("postgres_changes", { event: "*", schema: "public", table: "device_writeoffs" }, () => loadRef.current())
-      .subscribe();
-    return () => supabase.removeChannel(channel);
-  }, []);
-
-  if (loading) {
-    return (
-      <div className="flex justify-center py-10 text-ink-600/50">
-        <Loader2 className="animate-spin" size={20} />
-      </div>
-    );
-  }
+    { deps: [period], tables: ["devices", "device_stock", "device_writeoffs"], channel: "device-stats-realtime" }
+  );
 
   return (
-    <>
-      <div>
-        <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-ink-600/50">Sandėlio būklė dabar</p>
-        <div className="grid grid-cols-2 gap-3 lg:grid-cols-5">
-          <StatTile icon={Cpu} label="Prietaisų modelių" value={overview.totalDevices} accent="bg-ink-700" />
-          <StatTile icon={Boxes} label="Vienetų iš viso" value={overview.totalUnits} accent="bg-signal-blue" />
-          <StatTile icon={AlertTriangle} label="Mažo likučio" value={overview.lowCount} accent="bg-signal-amber" to="/prietaisai?likutis=low" />
-          <StatTile icon={PackageX} label="Be likučio" value={overview.outCount} accent="bg-signal-red" to="/prietaisai?likutis=out" />
-          <StatTile icon={MapPin} label="Lokacijų iš viso" value={overview.locationCount} accent="bg-signal-teal" />
-        </div>
-      </div>
+    <PanelShell query={query}>
+      {(data) => {
+        const o = data.overview;
+        // Prietaisams "sub" — IAN (modelio lauko prietaisai neturi)
+        const stats = normalizeWriteoffStats(data, DEVICE_REASON_KEYS, (t) => t.code || "");
+        return (
+          <>
+            <div>
+              <div className="mb-2 flex items-center justify-between gap-2">
+                <p className="text-xs font-semibold uppercase tracking-wide text-ink-600/50">Sandėlio būklė dabar</p>
+                <ReorderExportButton kind="devices" count={Number(o.low_count) + Number(o.out_count)} />
+              </div>
+              <div className="grid grid-cols-2 gap-3 lg:grid-cols-5">
+                <StatTile icon={Cpu} label="Prietaisų modelių" value={Number(o.total_devices)} accent="bg-ink-700" />
+                <StatTile icon={Boxes} label="Vienetų iš viso" value={Number(o.total_units)} accent="bg-signal-blue" />
+                <StatTile icon={AlertTriangle} label="Mažo likučio" value={Number(o.low_count)} accent="bg-signal-amber" to="/prietaisai?likutis=low" />
+                <StatTile icon={PackageX} label="Be likučio" value={Number(o.out_count)} accent="bg-signal-red" to="/prietaisai?likutis=out" />
+                <StatTile icon={MapPin} label="Lokacijų iš viso" value={Number(o.location_count)} accent="bg-signal-teal" />
+              </div>
+            </div>
 
-      <WriteoffStatsSection
-        period={period}
-        stats={writeoffStats}
-        topLabel="TOP 5 dažniausiai nurašomų prietaisų"
-        listPath="/prietaisai/nurasymai"
-        itemsPath="/prietaisai"
-        showWarranty
-      />
-    </>
+            <WriteoffStatsSection
+              period={period}
+              stats={stats}
+              topLabel="TOP 5 dažniausiai nurašomų prietaisų"
+              listPath="/prietaisai/nurasymai"
+              itemsPath="/prietaisai"
+              showWarranty
+            />
+          </>
+        );
+      }}
+    </PanelShell>
   );
 }
 

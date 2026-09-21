@@ -323,3 +323,60 @@ export async function exportDeviceWriteoffsToExcel(writeoffsList, filename) {
 
   return { ok: true };
 }
+
+// Užsakymo / papildymo sąrašas (mažo likučio ir pasibaigę) — naudojama
+// /statistika mygtukui "Užsakymo sąrašas (Excel)". "rows" — jau normalizuotos
+// eilutės iš StockAlertList: { level, label, sub, code, quantity, min, location }.
+// kind: "parts" (sub = modelis, code = detalės kodas, yra lokacija) arba
+// "devices" (sub = gamintojas, code = IAN, lokacijos nėra — likutis suminis).
+export async function exportStockAlertsToExcel(rows, kind, filename) {
+  const isParts = kind === "parts";
+  const workbook = new ExcelJS.Workbook();
+  const sheet = workbook.addWorksheet("Užsakymui");
+  sheet.columns = [
+    { width: 16 }, { width: 34 }, { width: 24 }, { width: 18 }, { width: 10 }, { width: 12 },
+    ...(isParts ? [{ width: 14 }] : [])
+  ];
+
+  const thin = { style: "thin" };
+  const fullBorder = { top: thin, left: thin, bottom: thin, right: thin };
+
+  const headerRow = sheet.addRow([
+    "Būsena", "Pavadinimas", isParts ? "Modelis" : "Gamintojas", isParts ? "Detalės kodas" : "IAN",
+    "Likutis", "Min. likutis", ...(isParts ? ["Lokacija"] : [])
+  ]);
+  headerRow.eachCell({ includeEmpty: true }, (cell) => {
+    cell.font = { bold: true };
+    cell.border = fullBorder;
+  });
+
+  rows.forEach((r) => {
+    const row = sheet.addRow([
+      r.level === "out" ? "Baigėsi" : "Mažas likutis",
+      r.label || "",
+      r.sub || "",
+      r.code || "",
+      r.quantity ?? 0,
+      r.min ?? "",
+      ...(isParts ? [r.location || ""] : [])
+    ]);
+    row.eachCell({ includeEmpty: true }, (cell) => {
+      cell.border = fullBorder;
+    });
+  });
+
+  const buffer = await workbook.xlsx.writeBuffer();
+  const blob = new Blob([buffer], {
+    type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+  });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+
+  return { ok: true };
+}

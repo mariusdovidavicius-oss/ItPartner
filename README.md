@@ -47,7 +47,7 @@ warehouse-app/
 │       add_device_pickups, fix_device_pickups_two_step,
 │       add_device_pickup_unpick, add_device_min_quantity,
 │       fix_device_pickup_stale_update_policy, fix_reset_test_data_stale_table,
-│       parts_location_text
+│       parts_location_text, add_stats_functions
 │       (žr. 2 skyrių; naujai DB migracijų NEREIKIA — pakanka `schema.sql`)
 └── src/
     ├── main.jsx
@@ -62,6 +62,10 @@ warehouse-app/
     │   ├── constants.js            ← būsenų sąrašai (ITEM/PALLET/SHIPMENT) ir spalvos
     │   ├── stockLevel.js           ← bendras `out`/`low`/`ok` būsenos ATVAIZDAVIMAS (eilutės spalva, kairės briaunos spalva, tooltip) — pati būsena skaičiuojama ne čia (priedams — DB stulpelis `stock_level`, prietaisams — `device_totals` view)
     │   ├── writeoffReasons.js      ← nurašymo priežasčių sąrašai (priedai: parduota/remontui/kita; prietaisai: dar ir garantija), etikečių žemėlapis ir nurašymo „detalės“ (kaina/RMA/tekstas) formatavimas
+    │   ├── period.js               ← laikotarpio filtras (30 d. / šie metai / visada): `PERIOD_OPTIONS`, `periodStart()` — bendras /statistika ir nurašymų sąrašams
+    │   ├── fetchAll.js             ← `fetchAllRows()` — užklausos kartojimas po 1000 eilučių (Supabase vienu atsakymu grąžina ne daugiau, o `.range(0, 4999)` tyliai sutrumpinamas)
+    │   ├── stats.js                ← /statistika duomenų paruošimas: DB funkcijų JSON → skydelių forma, suprantamas klaidos tekstas
+    │   ├── useLiveQuery.js         ← hook'as "užkrauti + atnaujinti realiu laiku": klaidos, seni duomenys rodomi kol kraunasi nauji, realtime su debounce, pasenusių atsakymų apsauga
     │   ├── format.js               ← `escapeLike` (ILIKE paieškai) ir datų formatavimas (`lt-LT`)
     │   ├── destination.js          ← "paskirties" (destination) skaičiavimas iš gamintojo+tipo
     │   ├── excelHeaders.js         ← Excel stulpelių antraščių atspėjimas importuojant
@@ -73,6 +77,9 @@ warehouse-app/
     │   ├── Layout.jsx               ← viršutinė juosta (prisijungimas/atsijungimas) + šoninė/apatinė navigacija (grupuota pagal modulį)
     │   ├── RequirePermission.jsx    ← route guard: reikalauja prisijungimo (rodo `InlineLoginForm` tame pačiame puslapyje), o su `permission` — ir konkrečios teisės
     │   ├── InlineLoginForm.jsx      ← prisijungimo forma, įterpiama tiesiog puslapyje (variantai "panel"/"bar"), be atskiro `/login` maršruto
+    │   ├── EnvBanner.jsx            ← lokali juosta "TESTINĖ DB" / "PRODUKCINĖ DB" (tik `npm run dev`, žr. 3 skyrių)
+    │   ├── WriteoffSummary.jsx      ← eilutė "Iš viso" virš nurašymų lentelių (kiekis + parduota suma pagal aktualius filtrus)
+    │   ├── ReorderExportButton.jsx  ← mažas mygtukas "Užsakymo sąrašas (Excel)" /statistika puslapyje: VISI pasibaigę ir mažo likučio įrašai viename faile
     │   ├── StatusBadge.jsx
     │   └── DestinationBadge.jsx
     └── pages/
@@ -495,7 +502,12 @@ Nepriklausomas nuo priedų (`parts`) modulio — savo teisės (`device_permissio
 **Vienas** puslapis (`/statistika`, `src/pages/Stats.jsx`) abiem sandėlio moduliams — NE atskiras kiekvienam. Meniu nuoroda rodoma atskira grupe apačioje, prieš „Admin“, jei vartotojas turi bent vieno modulio „delete“ teisę (priedų `user_permissions` arba prietaisų `device_permissions`).
 
 - Viršuje — mygtukų pora **Priedai** / **Prietaisai**, perjungianti, kurio modulio statistika rodoma; jei vartotojas turi teisę tik į vieną modulį, perjungiklis nerodomas, iškart matomas tas vienas. Jei neturi nė vieno — rodomas „Neturite teisės“ pranešimas (kaip `RequirePermission`).
-- Bendras „Laikotarpis“ filtras (30 d./šie metai/visada) galioja abiem moduliams vienodai.
+- Bendras „Laikotarpis“ filtras (30 d./šie metai/visada) galioja abiem moduliams vienodai ir tik nurašymų blokui — „Sandėlio būklė dabar“ nuo jo nepriklauso.
+- **Skaičiuoja DB, ne naršyklė.** Abu skydeliai kviečia RPC funkcijas `parts_stats(p_from)` / `device_stats(p_from)` (`migrate_add_stats_functions.sql`, `SECURITY INVOKER` — galioja tos pačios RLS taisyklės kaip tiesioginėms užklausoms), kurios grąžina paruoštą JSON (sandėlio būklė, nurašymų sumos pagal priežastį, TOP 5). Anksčiau puslapis tempė visas eilutes į naršyklę, o Supabase vienu atsakymu grąžina ne daugiau kaip 1000 — perkopus tą ribą sumos tyliai tapdavo per mažos. **Diegiant į produkciją šią migraciją reikia paleisti PRIEŠ įdiegiant naują front-end**, kitaip `/statistika` rodys klaidos juostą (su nurodymu, kurį failą paleisti).
+- **Klaidos matomos.** Nepavykus užkrauti rodoma raudona juosta su „Bandyti dar kartą“ (vietoj tylių nulių); jei jau turime senesnių duomenų, jie lieka rodomi po juosta.
+- **Be mirgėjimo.** Spinner'is rodomas tik pirmą kartą; keičiant laikotarpį ar gavus realtime pakeitimą senas turinys lieka ir tik pritemsta. Realtime pakeitimų serija (pvz. importas) sujungiama į vieną perkrovimą (~0,8 s), o pasenę atsakymai ignoruojami (`useLiveQuery.js`).
+- **Užsakymo sąrašo eksportas.** Prie „Sandėlio būklė dabar“ (abiejuose moduliuose) — mažas mygtukas **„Užsakymo sąrašas (Excel)“**: vienu failu eksportuoja VISUS pasibaigusius ir mažo likučio įrašus (pirmiausia pasibaigę, tada mažiausio likučio). Rodomas tik kai tokių įrašų yra. Pačio sąrašo šiame puslapyje nėra — plytelės „Mažo likučio“ / „Pasibaigę“ veda į filtruotus sąrašus (`/priedai?likutis=…`). Priedams skaitomas `parts.stock_level`, prietaisams — `device_totals` view (bendras kiekis per visas lokacijas).
+- **TOP 5** grupuojamas pagal detalės kodą + pavadinimą (priedai) arba IAN + pavadinimą (prietaisai), todėl tas pats priedas skirtingose lokacijose rodomas vienu įrašu (viena `parts` eilutė = viena lokacija). Šalia pavadinimo smulkiau rodomas modelis (priedams) arba IAN (prietaisams); paspaudus atidaroma paieška pagal kodą.
 - **Priedų** vaizdas — stat kortelės (priedų įrašai, vienetai iš viso, mažo likučio/pasibaigę pagal `stock_level`), nurašymų suvestinė (iš viso nurašyta, parduota €, remontui, kita) iš `parts_writeoffs`, TOP 5 dažniausiai nurašomų priedų.
 - **Prietaisų** vaizdas — analogiška struktūra, dabar IR su `stock_level`/`min_quantity` sąvoka (žr. `migrate_add_device_min_quantity.sql`): stat kortelės (prietaisų modelių, vienetų iš viso, mažo likučio, be likučio — abi paskutinės pagal `device_totals.stock_level`, lokacijų iš viso), ta pati nurašymų suvestinė iš `device_writeoffs` PAPILDYTA penkta plytele „Garantiniai pakeitimai" (`reason_type='garantija'`, žr. `/prietaisai/atsinesimai`), TOP 5 dažniausiai nurašomų prietaisų.
 - Abu vaizdai skaičiuoja tik iš AKTYVIŲ (neatšauktų) nurašymų ir atsinaujina realiu laiku per Supabase Realtime, kaip ir anksčiau.

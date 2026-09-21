@@ -3,6 +3,10 @@
 // apskaičiuojama atskirai kiekviename modulyje (Parts — DB stulpelis
 // stock_level, Devices — vietinė stockLevel() f-ja), tik stiliaus/teksto
 // atvaizdavimas buvo identiškas abiejuose failuose.
+// Numatytasis mažo likučio slenkstis, kai min_quantity nenurodytas — tas pats
+// skaičius įtvirtintas DB (parts.stock_level ir device_totals view: coalesce(min_quantity, 3)).
+export const DEFAULT_MIN_QUANTITY = 3;
+
 export function stockLevelRowTone(level) {
   if (level === "out") return "bg-signal-red/[0.04] hover:bg-signal-red/[0.07]";
   if (level === "low") return "bg-signal-amber/[0.05] hover:bg-signal-amber/[0.08]";
