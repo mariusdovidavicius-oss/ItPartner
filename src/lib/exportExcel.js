@@ -326,7 +326,7 @@ export async function exportDeviceWriteoffsToExcel(writeoffsList, filename) {
 
 // Užsakymo / papildymo sąrašas (mažo likučio ir pasibaigę) — naudojama
 // /statistika mygtukui "Užsakymo sąrašas (Excel)". "rows" — jau normalizuotos
-// eilutės iš StockAlertList: { level, label, sub, code, quantity, min, location }.
+// eilutės iš ReorderExportButton: { level, label, sub, code, quantity, min, location }.
 // kind: "parts" (sub = modelis, code = detalės kodas, yra lokacija) arba
 // "devices" (sub = gamintojas, code = IAN, lokacijos nėra — likutis suminis).
 export async function exportStockAlertsToExcel(rows, kind, filename) {
