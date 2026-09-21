@@ -213,7 +213,7 @@ export async function exportPartsWriteoffsToExcel(writeoffsList, filename) {
   const workbook = new ExcelJS.Workbook();
   const sheet = workbook.addWorksheet("Nurašymai");
   sheet.columns = [
-    { width: 14 }, { width: 28 }, { width: 16 }, { width: 8 },
+    { width: 14 }, { width: 28 }, { width: 26 }, { width: 16 }, { width: 8 },
     { width: 18 }, { width: 24 }, { width: 16 }, { width: 12 }
   ];
 
@@ -221,7 +221,7 @@ export async function exportPartsWriteoffsToExcel(writeoffsList, filename) {
   const fullBorder = { top: thin, left: thin, bottom: thin, right: thin };
 
   const headerRow = sheet.addRow([
-    "Data", "Priedas", "Detalės kodas", "Kiekis", "Priežastis", "Detalė", "Kas", "Būsena"
+    "Data", "Priedas", "Modelis", "Detalės kodas", "Kiekis", "Priežastis", "Kaina / RMA / Priežastis", "Kas", "Būsena"
   ]);
   headerRow.eachCell({ includeEmpty: true }, (cell) => {
     cell.font = { bold: true };
@@ -236,6 +236,7 @@ export async function exportPartsWriteoffsToExcel(writeoffsList, filename) {
     const row = sheet.addRow([
       formatDate(w.created_at),
       w.parts?.name || "",
+      w.parts?.main_model || "",
       w.parts?.part_code || "",
       w.quantity ?? 0,
       WRITEOFF_REASON_LABELS[w.reason_type] || w.reason_type,

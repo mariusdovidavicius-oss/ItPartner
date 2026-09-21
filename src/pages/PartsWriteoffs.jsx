@@ -9,6 +9,12 @@ const PAGE_SIZE_OPTIONS = [10, 25, 50, 100];
 const REASON_LABELS = reasonLabelMap(PART_WRITEOFF_REASONS);
 const SEARCH_DEBOUNCE_MS = 300;
 
+// "Detalės" stulpelio turinys priklauso nuo priežasties (parduota — kaina,
+// remontui — RMA, kita — laisvas tekstas), todėl antraštė keičiasi pagal
+// pasirinktą priežasties filtrą; kai rodomos visos — bendra antraštė.
+const DETAIL_HEADERS = { parduota: "Kaina", remontui: "RMA Nr.", kita: "Priežastis" };
+const DETAIL_HEADER_ALL = "Kaina / RMA / Priežastis";
+
 export default function PartsWriteoffs() {
   // Pradinis priežasties filtras gali ateiti iš URL (žr. /statistika
   // nurašymų plytelių nuorodas — pvz. "?priezastis=parduota") — skaitoma
@@ -43,14 +49,14 @@ export default function PartsWriteoffs() {
   // ne-adminui. Dėl to paieška apima tik priedo pavadinimą/kodą, ne vartotoją.
   function buildQuery(opts = {}) {
     let query = supabase.from("parts_writeoffs").select(
-      "id, quantity, reason_type, price, rma, reason, created_at, undone_at, parts!inner(name, part_code, location), profiles!user_id(username)",
+      "id, quantity, reason_type, price, rma, reason, created_at, undone_at, parts!inner(name, part_code, main_model, location), profiles!user_id(username)",
       opts.count ? { count: opts.count } : undefined
     );
 
     const tokens = debouncedSearch.trim().toLowerCase().split(/\s+/).filter(Boolean);
     tokens.forEach((token) => {
       const q = escapeLike(token);
-      query = query.or(`name.ilike.%${q}%,part_code.ilike.%${q}%`, { referencedTable: "parts" });
+      query = query.or(`name.ilike.%${q}%,part_code.ilike.%${q}%,main_model.ilike.%${q}%`, { referencedTable: "parts" });
     });
 
     if (reasonFilter !== "all") query = query.eq("reason_type", reasonFilter);
@@ -152,7 +158,7 @@ export default function PartsWriteoffs() {
           <input
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            placeholder="Ieškoti pagal priedo pavadinimą arba kodą…"
+            placeholder="Ieškoti pagal priedo pavadinimą, kodą arba modelį…"
             autoComplete="off"
             className="input-field pl-10"
           />
@@ -214,10 +220,11 @@ export default function PartsWriteoffs() {
                 <tr>
                   <th className="px-3 py-2.5 font-semibold">Data</th>
                   <th className="px-3 py-2.5 font-semibold">Priedas</th>
+                  <th className="px-3 py-2.5 font-semibold">Modelis</th>
                   <th className="px-3 py-2.5 font-semibold">Kodas</th>
                   <th className="px-3 py-2.5 font-semibold">Kiekis</th>
                   <th className="px-3 py-2.5 font-semibold">Priežastis</th>
-                  <th className="px-3 py-2.5 font-semibold">Detalė</th>
+                  <th className="px-3 py-2.5 font-semibold">{DETAIL_HEADERS[reasonFilter] || DETAIL_HEADER_ALL}</th>
                   <th className="px-3 py-2.5 font-semibold">Kas</th>
                   <th className="px-3 py-2.5 font-semibold">Būsena</th>
                 </tr>
@@ -226,11 +233,12 @@ export default function PartsWriteoffs() {
                 {writeoffs.map((w) => (
                   <tr key={w.id} className={`hover:bg-ink-900/[0.015] ${w.undone_at ? "text-ink-600/40 line-through" : ""}`}>
                     <td className="px-3 py-2.5 text-ink-600/70">{formatDate(w.created_at)}</td>
-                    <td className="max-w-[180px] truncate px-3 py-2.5 text-ink-800">{w.parts?.name || "—"}</td>
+                    <td className="max-w-[180px] truncate px-3 py-2.5 text-ink-800" title={w.parts?.name || undefined}>{w.parts?.name || "—"}</td>
+                    <td className="max-w-[160px] truncate px-3 py-2.5 text-ink-600/80" title={w.parts?.main_model || undefined}>{w.parts?.main_model || "—"}</td>
                     <td className="max-w-[110px] truncate px-3 py-2.5 font-mono text-ink-900">{w.parts?.part_code || "—"}</td>
                     <td className="px-3 py-2.5 font-semibold text-ink-800">-{w.quantity}</td>
                     <td className="px-3 py-2.5 text-ink-800">{REASON_LABELS[w.reason_type] || w.reason_type}</td>
-                    <td className="max-w-[160px] truncate px-3 py-2.5 text-ink-600/70">{writeoffDetail(w)}</td>
+                    <td className="max-w-[160px] truncate px-3 py-2.5 text-ink-600/70" title={writeoffDetail(w)}>{writeoffDetail(w)}</td>
                     <td className="px-3 py-2.5 text-ink-600/70">{w.profiles?.username || "—"}</td>
                     <td className="px-3 py-2.5 no-underline">
                       {w.undone_at ? (
