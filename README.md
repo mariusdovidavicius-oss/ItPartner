@@ -26,7 +26,8 @@ warehouse-app/
 │   ├── delete-user.js             ← vartotojo trynimas (negalima ištrinti savęs; istorija išlieka, `user_id` → NULL)
 │   └── update-user-password.js    ← vartotojo slaptažodžio keitimas
 ├── scripts/
-│   └── bootstrap-admin.mjs        ← vienkartinis CLI skriptas pirmam admin vartotojui sukurti
+│   ├── bootstrap-admin.mjs        ← vienkartinis CLI skriptas pirmam admin vartotojui sukurti
+│   └── seed-test-parts.mjs        ← bandomieji priedų + nurašymų duomenys TESTINEI DB (su saugikliu prieš produkciją)
 ├── supabase/
 │   ├── schema.sql                 ← pilna, dabartinė schema (paleidžiama naujai DB)
 │   └── migrate_*.sql              ← papildomos migracijos jau egzistuojančiai DB, chronologine tvarka:
@@ -417,7 +418,14 @@ Taisyklė: lokaliai dirbama tik su testiniu projektu — taip `reset_test_data`,
    Skriptas pirmiausia atspausdina `Tikslinė DB: <host>` — **prieš tęsdami patikrinkite, kad tai testinio projekto adresas**, ne produkcinio. Be argumentų sukuria `marius` / `admin`, todėl testinei DB geriau nurodyti savo slaptažodį.
 5. `npm run dev` ir prisijunkite sukurtu ID + slaptažodžiu.
 
-Tuščioje testinėje DB nėra katalogo ir prekių — įkelkite bandomuosius duomenis per `/importas` (Katalogas / Priedai / Prietaisai).
+Tuščioje testinėje DB nėra katalogo ir prekių. Priedų bandomuosius duomenis (37 priedai + 13 nurašymų, apimantys visus atvejus: baigėsi / mažas likutis pagal numatytąjį ir individualų slenkstį / el. parduotuvė / pasikartojantis kodas / tušti laukai / ilgas suderinamų modelių sąrašas / atšauktas nurašymas) įrašo:
+
+```bash
+node scripts/seed-test-parts.mjs            # nieko nedaro, jei `parts` jau turi įrašų
+node scripts/seed-test-parts.mjs --replace  # prieš tai IŠTRINA visus priedus ir jų nurašymus (tik testinėje DB)
+```
+
+Skriptas rašo tiesiai per `service_role` ir **atsisako veikti**, jei aktyvi DB sutampa su `.env` (produkcija) arba `.env.local` neužpildytas. Kitų modulių bandomuosius duomenis (katalogas, prietaisai) įkelkite per `/importas`.
 
 **Apribojimas lokaliai:** `npm run dev` (Vite) neaptarnauja `api/` funkcijų, todėl `/priedai/vartotojai` puslapyje **vartotojų kūrimas, trynimas ir slaptažodžio keitimas lokaliai neveiks** („Nepavyko pasiekti serverio“). Teisių ir admin žymos keitimas veikia (eina tiesiai į Supabase). Papildomus testinius vartotojus kurkite `bootstrap-admin.mjs` (jis kiekvieną pažymi admin, kurį galima nuimti `/priedai/vartotojai`). Nepaleiskite `vercel dev` ar `vercel env pull`, kol nepatikrinote, kokias reikšmes Vercel projekte turi Development aplinka — jos gali rodyti į produkcinį projektą.
 
