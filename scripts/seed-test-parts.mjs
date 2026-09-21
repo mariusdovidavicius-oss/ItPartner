@@ -105,19 +105,23 @@ const PARTS = [
     "PABS 20-Li A1; PABS 20-Li B2; PABS 20-Li C3; PSSA 20-Li A1; PSSA 20-Li B2; PWSA 20-Li A1; PWSA 20-Li B2; PKS 1800 A1; PKS 1800 B2; PDSM 600 A1; PHSP 1600 A1; PHSP 1600 B2", null]
 ];
 
-// [priedo indeksas PARTS masyve, kiekis, priežastis, kaina/RMA/tekstas, prieš kiek dienų, atšauktas?]
+// [priedo indeksas PARTS masyve, kiekis, priežastis, VIENETO kaina (parduota) / RMA / tekstas, prieš kiek dienų, atšauktas?]
+//
+// DĖMESIO: parts_writeoffs.price DB yra SUMA UŽ VISĄ nurašomą kiekį (taip ją
+// įveda žmonės formoje ir taip sumuoja /statistika), todėl "parduota"
+// eilutėse čia rašoma kaina už VIENETĄ, o į DB skriptas įrašo kaina × kiekis.
 const WRITEOFFS = [
-  [0, 2, "parduota", 12.5, 3],
+  [0, 2, "parduota", 6.9, 3],       // 2 × 6,90 = 13,80 €
   [0, 1, "remontui", "RMA-2026-0142", 9],
-  [4, 3, "parduota", 24.9, 5],
-  [8, 10, "parduota", 4.2, 12],
-  [8, 5, "parduota", 4.2, 27],
-  [16, 6, "parduota", 8.0, 2],
+  [4, 3, "parduota", 8.5, 5],       // 3 × 8,50 = 25,50 €
+  [8, 10, "parduota", 1.2, 12],     // 10 × 1,20 = 12,00 €
+  [8, 5, "parduota", 1.2, 27],      // 5 × 1,20 = 6,00 €
+  [16, 6, "parduota", 2.5, 2],      // 6 × 2,50 = 15,00 €
   [16, 4, "kita", "Sugadinta pakuotė", 15],
   [21, 1, "remontui", "RMA-2026-0157", 6],
-  [22, 3, "parduota", 31.0, 1],
-  [26, 2, "parduota", 15.5, 20, true],
-  [31, 5, "parduota", 19.9, 40],
+  [22, 3, "parduota", 10.9, 1],     // 3 × 10,90 = 32,70 €
+  [26, 2, "parduota", 3.2, 20, true], // 2 × 3,20 = 6,40 € (atšauktas)
+  [31, 5, "parduota", 4.9, 40],     // 5 × 4,90 = 24,50 €
   [28, 1, "kita", "Numesta, sulūžo", 55],
   [30, 4, "remontui", "RMA-2026-0101", 70]
 ];
@@ -189,7 +193,7 @@ async function main() {
       user_id: admin?.id ?? null,
       quantity,
       reason_type,
-      price: reason_type === "parduota" ? detail : null,
+      price: reason_type === "parduota" ? Math.round(detail * quantity * 100) / 100 : null,
       rma: reason_type === "remontui" ? detail : null,
       reason: reason_type === "kita" ? detail : null,
       created_at: createdAt,
