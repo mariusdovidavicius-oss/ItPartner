@@ -2127,15 +2127,24 @@ grant execute on function public.reset_test_data() to authenticated;
 -- parts/devices/device_stock peržiūra vieša, o parts_writeoffs/device_writeoffs
 -- rodomi tik su 'delete' teise (be jos nurašymų dalis grįžta tuščia).
 --
--- Skaičiuojami TIK aktyvūs (neatšaukti, undone_at is null) nurašymai;
--- p_from = NULL reiškia "visas laikotarpis". price — SUMA UŽ VISĄ nurašomą
+-- Skaičiuojami TIK aktyvūs (neatšaukti, undone_at is null) nurašymai iš
+-- intervalo [p_from, p_to): p_from įskaitytinai, p_to IŠSKIRTINĖ riba (kitos
+-- dienos pradžia, todėl paskutinė pasirinkta diena įtraukiama visa); NULL =
+-- riba neribojama, abu NULL = visas laikotarpis. price — SUMA UŽ VISĄ nurašomą
 -- kiekį (ne už vienetą), todėl sumuojama be dauginimo.
+--
+-- Saugu paleisti pakartotinai (ir kaip atnaujinimą iš ankstesnės versijos, turėjusios
+-- tik p_from): sena funkcija pašalinama, nes kitaip liktų dvi to paties vardo
+-- funkcijos ir PostgreSQL nežinotų, kurią kviesti.
 --
 -- top_items grupuojamas pagal detalės kodą + pavadinimą (priedai) arba IAN +
 -- pavadinimą (prietaisai), todėl tas pats priedas skirtingose lokacijose
 -- (skirtingos parts eilutės) rodomas vienu įrašu.
 
-create or replace function public.parts_stats(p_from timestamptz default null)
+drop function if exists public.parts_stats(timestamptz);
+drop function if exists public.device_stats(timestamptz);
+
+create or replace function public.parts_stats(p_from timestamptz default null, p_to timestamptz default null)
 returns jsonb
 language sql
 stable
@@ -2147,6 +2156,7 @@ as $$
     join public.parts p on p.id = w.part_id
     where w.undone_at is null
       and (p_from is null or w.created_at >= p_from)
+      and (p_to is null or w.created_at < p_to)
   )
   select jsonb_build_object(
     'overview', (
@@ -2190,7 +2200,7 @@ as $$
   );
 $$;
 
-create or replace function public.device_stats(p_from timestamptz default null)
+create or replace function public.device_stats(p_from timestamptz default null, p_to timestamptz default null)
 returns jsonb
 language sql
 stable
@@ -2201,6 +2211,7 @@ as $$
     from public.device_writeoffs w
     where w.undone_at is null
       and (p_from is null or w.created_at >= p_from)
+      and (p_to is null or w.created_at < p_to)
   )
   select jsonb_build_object(
     'overview', jsonb_build_object(
@@ -2241,7 +2252,7 @@ as $$
   );
 $$;
 
-revoke all on function public.parts_stats(timestamptz) from public, anon;
-revoke all on function public.device_stats(timestamptz) from public, anon;
-grant execute on function public.parts_stats(timestamptz) to authenticated;
-grant execute on function public.device_stats(timestamptz) to authenticated;
+revoke all on function public.parts_stats(timestamptz, timestamptz) from public, anon;
+revoke all on function public.device_stats(timestamptz, timestamptz) from public, anon;
+grant execute on function public.parts_stats(timestamptz, timestamptz) to authenticated;
+grant execute on function public.device_stats(timestamptz, timestamptz) to authenticated;

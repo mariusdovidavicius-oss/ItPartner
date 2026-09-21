@@ -4,9 +4,10 @@ import { Search, Loader2, ChevronLeft, ChevronRight, PackageMinus, Download, Ale
 import { supabase } from "../lib/supabaseClient";
 import { escapeLike, formatDate } from "../lib/format";
 import { PART_WRITEOFF_REASONS, reasonLabelMap, summarizeWriteoffs, writeoffDetail } from "../lib/writeoffReasons";
-import { PERIOD_OPTIONS, isPeriod, periodStart } from "../lib/period";
+import { periodKey, periodRange, periodStateFromParams } from "../lib/period";
 import { fetchAllRows } from "../lib/fetchAll";
 import WriteoffSummary from "../components/WriteoffSummary";
+import PeriodFilter from "../components/PeriodFilter";
 
 const PAGE_SIZE_OPTIONS = [10, 25, 50, 100];
 const REASON_LABELS = reasonLabelMap(PART_WRITEOFF_REASONS);
@@ -34,10 +35,8 @@ export default function PartsWriteoffs() {
     const v = searchParams.get("priezastis");
     return v && v in REASON_LABELS ? v : "all";
   });
-  const [period, setPeriod] = useState(() => {
-    const v = searchParams.get("laikotarpis");
-    return isPeriod(v) ? v : "all";
-  });
+  // Laikotarpis: ?laikotarpis=30d|month|lastmonth|ytd arba ?nuo=YYYY-MM-DD&iki=YYYY-MM-DD (lib/period.js)
+  const [periodState, setPeriodState] = useState(() => periodStateFromParams(searchParams));
   const [pageSize, setPageSize] = useState(PAGE_SIZE_OPTIONS[0]);
   const [page, setPage] = useState(0);
   const [exporting, setExporting] = useState(false);
@@ -71,8 +70,9 @@ export default function PartsWriteoffs() {
 
     if (reasonFilter !== "all") query = query.eq("reason_type", reasonFilter);
 
-    const start = periodStart(period);
-    if (start) query = query.gte("created_at", start);
+    const { from, to } = periodRange(periodState);
+    if (from) query = query.gte("created_at", from);
+    if (to) query = query.lt("created_at", to); // "to" — išskirtinė riba (kitos dienos pradžia)
 
     // Suvestinei skaičiuojami tik aktyvūs (neatšaukti) nurašymai — kaip ir /statistika.
     if (opts.activeOnly) query = query.is("undone_at", null);
@@ -106,7 +106,7 @@ export default function PartsWriteoffs() {
   // Filtro pasikeitimas turi grąžinti į 1 puslapį PRIEŠ pakraunant — abu
   // veiksmai sujungti į vieną efektą (žr. tą patį komentarą Parts.jsx),
   // kad load() nesuveiktų su dar pasenusia "page" reikšme.
-  const filterKey = `${debouncedSearch}|${reasonFilter}|${period}|${pageSize}`;
+  const filterKey = `${debouncedSearch}|${reasonFilter}|${periodKey(periodState)}|${pageSize}`;
   const prevFilterKey = useRef(filterKey);
   useEffect(() => {
     if (filterKey !== prevFilterKey.current) {
@@ -149,9 +149,15 @@ export default function PartsWriteoffs() {
 
   async function handleExport() {
     setExporting(true);
-    const [{ data }, { exportPartsWriteoffsToExcel }] = await Promise.all([buildQuery(), import("../lib/exportExcel")]);
-    await exportPartsWriteoffsToExcel(data || [], `Nurasymai-${new Date().toISOString().slice(0, 10)}.xlsx`);
-    setExporting(false);
+    try {
+      // Visos filtrą atitinkančios eilutės (ne tik pirmos 1000) — pvz. mėnesio pardavimų ataskaita
+      const [data, { exportPartsWriteoffsToExcel }] = await Promise.all([fetchAllRows(() => buildQuery()), import("../lib/exportExcel")]);
+      await exportPartsWriteoffsToExcel(data, `Nurasymai-${new Date().toISOString().slice(0, 10)}.xlsx`);
+    } catch (e) {
+      setActionError(`Nepavyko eksportuoti: ${e?.message || "nežinoma klaida"}`);
+    } finally {
+      setExporting(false);
+    }
   }
 
   return (
@@ -200,18 +206,7 @@ export default function PartsWriteoffs() {
             ))}
           </select>
         </label>
-        <label className="flex shrink-0 items-center gap-2 text-xs font-medium text-ink-600/70">
-          Laikotarpis
-          <select
-            value={period}
-            onChange={(e) => setPeriod(e.target.value)}
-            className="input-field w-auto py-1.5 text-sm"
-          >
-            {PERIOD_OPTIONS.map((o) => (
-              <option key={o.value} value={o.value}>{o.label}</option>
-            ))}
-          </select>
-        </label>
+        <PeriodFilter value={periodState} onChange={setPeriodState} />
         <label className="flex shrink-0 items-center gap-2 text-xs font-medium text-ink-600/70">
           Rodyti po
           <select
@@ -246,7 +241,7 @@ export default function PartsWriteoffs() {
           <div className="flex flex-col items-center gap-2 py-10 text-center">
             <PackageMinus className="text-ink-600/30" size={24} />
             <p className="text-sm text-ink-600/60">
-              {totalCount === 0 && debouncedSearch.trim() === "" && reasonFilter === "all" && period === "all"
+              {totalCount === 0 && debouncedSearch.trim() === "" && reasonFilter === "all" && periodState.period === "all"
                 ? "Nurašymų dar nėra."
                 : "Pagal paiešką nieko nerasta."}
             </p>

@@ -6,10 +6,11 @@ import {
 } from "lucide-react";
 import { supabase } from "../lib/supabaseClient";
 import { useAuth } from "../lib/AuthProvider";
-import { PERIOD_OPTIONS, periodStart } from "../lib/period";
+import { periodKey, periodLabel, periodRange, periodToParams } from "../lib/period";
 import { useLiveQuery } from "../lib/useLiveQuery";
 import { DEVICE_REASON_KEYS, PART_REASON_KEYS, normalizeWriteoffStats, statsErrorMessage } from "../lib/stats";
 import ReorderExportButton from "../components/ReorderExportButton";
+import PeriodFilter from "../components/PeriodFilter";
 
 // "to" nebūtinas — kai jo nėra (pvz. bendros sumos, kurių filtruoti
 // negalima, tokios kaip "Vienetų iš viso"), plytelė lieka paprasta
@@ -84,14 +85,14 @@ function PanelShell({ query, children }) {
 // "listPath" — /priedai/nurasymai arba /prietaisai/nurasymai, naudojamas
 // priežasties plytelėms (su ?priezastis= filtru). "itemsPath" — /priedai
 // arba /prietaisai, naudojamas TOP 5 įrašams (su ?q= paieška).
-// Plytelių nuorodos perduoda ir pasirinktą laikotarpį (?laikotarpis=), kad
+// Plytelių nuorodos perduoda ir pasirinktą laikotarpį (?laikotarpis= arba ?nuo=&iki=), kad
 // atidaryta lentelė rodytų tuos pačius nurašymus, kuriuos suskaičiavo plytelė.
-function WriteoffStatsSection({ period, stats, topLabel, showWarranty = false, listPath, itemsPath }) {
+function WriteoffStatsSection({ periodState, stats, topLabel, showWarranty = false, listPath, itemsPath }) {
   const maxTopQty = Math.max(1, ...stats.topItems.map((p) => p.qty));
   const listLink = (reason) => {
     const params = new URLSearchParams();
     if (reason) params.set("priezastis", reason);
-    if (period !== "all") params.set("laikotarpis", period);
+    periodToParams(periodState, params);
     const qs = params.toString();
     return qs ? `${listPath}?${qs}` : listPath;
   };
@@ -99,7 +100,7 @@ function WriteoffStatsSection({ period, stats, topLabel, showWarranty = false, l
     <>
       <div>
         <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-ink-600/50">
-          Nurašymai — {PERIOD_OPTIONS.find((o) => o.value === period)?.label.toLowerCase()}
+          Nurašymai — {periodLabel(periodState).toLowerCase()}
         </p>
         <div className={`grid grid-cols-2 gap-3 ${showWarranty ? "lg:grid-cols-5" : "lg:grid-cols-4"}`}>
           <StatTile icon={PackageMinus} label="Iš viso nurašyta" value={`${stats.totalQty} vnt.`} accent="bg-ink-700" to={listLink()} />
@@ -162,17 +163,26 @@ function WriteoffStatsSection({ period, stats, topLabel, showWarranty = false, l
   );
 }
 
+// RPC parametrai iš laikotarpio. "p_to" siunčiamas TIK kai riba yra — todėl
+// laikotarpiai be viršutinės ribos (30 d., šis mėnuo, šie metai, visada)
+// veikia ir su sena funkcijos versija (be p_to); "Praėjęs mėnuo" ir datos
+// "iki" reikalauja atnaujintos migracijos (žr. migrate_add_stats_functions.sql).
+function rpcParams(periodState) {
+  const { from, to } = periodRange(periodState);
+  return to ? { p_from: from, p_to: to } : { p_from: from };
+}
+
 // Abu skydeliai skaito paruoštus agregatus iš DB funkcijų (žr.
 // supabase/migrate_add_stats_functions.sql) — jokio eilučių tempimo į
 // naršyklę, todėl sumos tikslios ir kai įrašų daugiau nei 1000.
-function PartsStatsPanel({ period }) {
+function PartsStatsPanel({ periodState }) {
   const query = useLiveQuery(
     async () => {
-      const { data, error } = await supabase.rpc("parts_stats", { p_from: periodStart(period) });
+      const { data, error } = await supabase.rpc("parts_stats", rpcParams(periodState));
       if (error) throw error;
       return data;
     },
-    { deps: [period], tables: ["parts", "parts_writeoffs"], channel: "parts-stats-realtime" }
+    { deps: [periodKey(periodState)], tables: ["parts", "parts_writeoffs"], channel: "parts-stats-realtime" }
   );
 
   return (
@@ -196,7 +206,7 @@ function PartsStatsPanel({ period }) {
             </div>
 
             <WriteoffStatsSection
-              period={period}
+              periodState={periodState}
               stats={stats}
               topLabel="TOP 5 dažniausiai nurašomų priedų"
               listPath="/priedai/nurasymai"
@@ -209,14 +219,14 @@ function PartsStatsPanel({ period }) {
   );
 }
 
-function DeviceStatsPanel({ period }) {
+function DeviceStatsPanel({ periodState }) {
   const query = useLiveQuery(
     async () => {
-      const { data, error } = await supabase.rpc("device_stats", { p_from: periodStart(period) });
+      const { data, error } = await supabase.rpc("device_stats", rpcParams(periodState));
       if (error) throw error;
       return data;
     },
-    { deps: [period], tables: ["devices", "device_stock", "device_writeoffs"], channel: "device-stats-realtime" }
+    { deps: [periodKey(periodState)], tables: ["devices", "device_stock", "device_writeoffs"], channel: "device-stats-realtime" }
   );
 
   return (
@@ -242,7 +252,7 @@ function DeviceStatsPanel({ period }) {
             </div>
 
             <WriteoffStatsSection
-              period={period}
+              periodState={periodState}
               stats={stats}
               topLabel="TOP 5 dažniausiai nurašomų prietaisų"
               listPath="/prietaisai/nurasymai"
@@ -271,7 +281,7 @@ export default function Stats() {
   const canViewDevices = hasDevicePermission("view") && hasDevicePermission("delete");
 
   const [module, setModule] = useState(canViewParts ? "parts" : "devices");
-  const [period, setPeriod] = useState("30d");
+  const [periodState, setPeriodState] = useState({ period: "30d", from: "", to: "" });
 
   const availableModules = MODULES.filter(
     (m) => (m.key === "parts" && canViewParts) || (m.key === "devices" && canViewDevices)
@@ -295,18 +305,7 @@ export default function Stats() {
           <h1 className="text-xl font-bold text-ink-900 lg:text-2xl">Statistika</h1>
           <p className="mt-1 text-sm text-ink-600/70">Sandėlio ir nurašymų apžvalga.</p>
         </div>
-        <label className="flex shrink-0 items-center gap-2 text-xs font-medium text-ink-600/70">
-          Laikotarpis
-          <select
-            value={period}
-            onChange={(e) => setPeriod(e.target.value)}
-            className="input-field w-auto py-1.5 text-sm"
-          >
-            {PERIOD_OPTIONS.map((o) => (
-              <option key={o.value} value={o.value}>{o.label}</option>
-            ))}
-          </select>
-        </label>
+        <PeriodFilter value={periodState} onChange={setPeriodState} />
       </div>
 
       {availableModules.length > 1 && (
@@ -329,9 +328,9 @@ export default function Stats() {
       )}
 
       {activeModule === "parts" ? (
-        <PartsStatsPanel period={period} />
+        <PartsStatsPanel periodState={periodState} />
       ) : (
-        <DeviceStatsPanel period={period} />
+        <DeviceStatsPanel periodState={periodState} />
       )}
     </div>
   );
