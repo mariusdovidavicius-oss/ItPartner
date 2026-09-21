@@ -12,19 +12,23 @@ import { readFileSync } from "node:fs";
 import { createClient } from "@supabase/supabase-js";
 import { idToEmail } from "../src/lib/authConstants.js";
 
+// Kaip ir Vite: .env.local turi pirmenybę prieš .env, todėl lokalus testinis
+// projektas niekada netyčia nepaliečia produkcinės DB.
 function loadEnv() {
   const env = {};
-  try {
-    const content = readFileSync(new URL("../.env", import.meta.url), "utf8");
-    content.split("\n").forEach((line) => {
-      const trimmed = line.trim();
-      if (!trimmed || trimmed.startsWith("#")) return;
-      const idx = trimmed.indexOf("=");
-      if (idx === -1) return;
-      env[trimmed.slice(0, idx).trim()] = trimmed.slice(idx + 1).trim();
-    });
-  } catch {
-    // .env gali nebūti — tada pasikliaujama vien process.env
+  for (const file of [".env", ".env.local"]) {
+    try {
+      const content = readFileSync(new URL(`../${file}`, import.meta.url), "utf8");
+      content.split("\n").forEach((line) => {
+        const trimmed = line.trim();
+        if (!trimmed || trimmed.startsWith("#")) return;
+        const idx = trimmed.indexOf("=");
+        if (idx === -1) return;
+        env[trimmed.slice(0, idx).trim()] = trimmed.slice(idx + 1).trim();
+      });
+    } catch {
+      // failo gali nebūti — tada pasikliaujama likusiais šaltiniais / process.env
+    }
   }
   return { ...env, ...process.env };
 }
@@ -41,6 +45,8 @@ if (!url || !serviceKey) {
   );
   process.exit(1);
 }
+
+console.log(`Tikslinė DB: ${new URL(url).host}`);
 
 const id = (process.argv[2] || "marius").trim().toLowerCase();
 const password = process.argv[3] || "admin";
