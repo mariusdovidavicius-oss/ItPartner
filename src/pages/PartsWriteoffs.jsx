@@ -3,7 +3,10 @@ import { useSearchParams } from "react-router-dom";
 import { Search, Loader2, ChevronLeft, ChevronRight, PackageMinus, Download, AlertCircle, X } from "lucide-react";
 import { supabase } from "../lib/supabaseClient";
 import { escapeLike, formatDate } from "../lib/format";
-import { PART_WRITEOFF_REASONS, reasonLabelMap, writeoffDetail } from "../lib/writeoffReasons";
+import { PART_WRITEOFF_REASONS, reasonLabelMap, summarizeWriteoffs, writeoffDetail } from "../lib/writeoffReasons";
+import { PERIOD_OPTIONS, isPeriod, periodStart } from "../lib/period";
+import { fetchAllRows } from "../lib/fetchAll";
+import WriteoffSummary from "../components/WriteoffSummary";
 
 const PAGE_SIZE_OPTIONS = [10, 25, 50, 100];
 const REASON_LABELS = reasonLabelMap(PART_WRITEOFF_REASONS);
@@ -16,11 +19,13 @@ const DETAIL_HEADERS = { parduota: "Kaina", remontui: "RMA Nr.", kita: "Priežas
 const DETAIL_HEADER_ALL = "Kaina / RMA / Priežastis";
 
 export default function PartsWriteoffs() {
-  // Pradinis priežasties filtras gali ateiti iš URL (žr. /statistika
-  // nurašymų plytelių nuorodas — pvz. "?priezastis=parduota") — skaitoma
-  // TIK vieną kartą (lazy init), toliau valdoma įprastai per UI.
+  // Pradiniai priežasties ir laikotarpio filtrai gali ateiti iš URL (žr.
+  // /statistika nurašymų plytelių nuorodas — pvz. "?priezastis=parduota&
+  // laikotarpis=30d") — skaitomi TIK vieną kartą (lazy init), toliau valdomi
+  // įprastai per UI.
   const [searchParams] = useSearchParams();
   const [writeoffs, setWriteoffs] = useState([]);
+  const [summary, setSummary] = useState(null);
   const [totalCount, setTotalCount] = useState(0);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
@@ -28,6 +33,10 @@ export default function PartsWriteoffs() {
   const [reasonFilter, setReasonFilter] = useState(() => {
     const v = searchParams.get("priezastis");
     return v && v in REASON_LABELS ? v : "all";
+  });
+  const [period, setPeriod] = useState(() => {
+    const v = searchParams.get("laikotarpis");
+    return isPeriod(v) ? v : "all";
   });
   const [pageSize, setPageSize] = useState(PAGE_SIZE_OPTIONS[0]);
   const [page, setPage] = useState(0);
@@ -49,7 +58,8 @@ export default function PartsWriteoffs() {
   // ne-adminui. Dėl to paieška apima tik priedo pavadinimą/kodą, ne vartotoją.
   function buildQuery(opts = {}) {
     let query = supabase.from("parts_writeoffs").select(
-      "id, quantity, reason_type, price, rma, reason, created_at, undone_at, parts!inner(name, part_code, main_model, location), profiles!user_id(username)",
+      opts.select ??
+        "id, quantity, reason_type, price, rma, reason, created_at, undone_at, parts!inner(name, part_code, main_model, location), profiles!user_id(username)",
       opts.count ? { count: opts.count } : undefined
     );
 
@@ -61,6 +71,12 @@ export default function PartsWriteoffs() {
 
     if (reasonFilter !== "all") query = query.eq("reason_type", reasonFilter);
 
+    const start = periodStart(period);
+    if (start) query = query.gte("created_at", start);
+
+    // Suvestinei skaičiuojami tik aktyvūs (neatšaukti) nurašymai — kaip ir /statistika.
+    if (opts.activeOnly) query = query.is("undone_at", null);
+
     return query.order("created_at", { ascending: false });
   }
 
@@ -68,9 +84,17 @@ export default function PartsWriteoffs() {
     setLoading(true);
     const from = page * pageSize;
     const to = from + pageSize - 1;
-    const { data, count } = await buildQuery({ count: "exact" }).range(from, to);
+    // "parts!inner(id)" — paieškos filtras (name/part_code/main_model) remiasi
+    // parts join'u, todėl jis turi būti ir suvestinės užklausoje.
+    const [{ data, count }, summaryRows] = await Promise.all([
+      buildQuery({ count: "exact" }).range(from, to),
+      fetchAllRows(() =>
+        buildQuery({ select: "quantity, reason_type, price, parts!inner(id)", activeOnly: true })
+      ).catch(() => null)
+    ]);
     setWriteoffs(data || []);
     setTotalCount(count ?? 0);
+    setSummary(summaryRows ? summarizeWriteoffs(summaryRows) : null);
     setLoading(false);
   }
 
@@ -82,7 +106,7 @@ export default function PartsWriteoffs() {
   // Filtro pasikeitimas turi grąžinti į 1 puslapį PRIEŠ pakraunant — abu
   // veiksmai sujungti į vieną efektą (žr. tą patį komentarą Parts.jsx),
   // kad load() nesuveiktų su dar pasenusia "page" reikšme.
-  const filterKey = `${debouncedSearch}|${reasonFilter}|${pageSize}`;
+  const filterKey = `${debouncedSearch}|${reasonFilter}|${period}|${pageSize}`;
   const prevFilterKey = useRef(filterKey);
   useEffect(() => {
     if (filterKey !== prevFilterKey.current) {
@@ -152,8 +176,8 @@ export default function PartsWriteoffs() {
         </div>
       )}
 
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
-        <div className="relative flex-1">
+      <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center">
+        <div className="relative min-w-[220px] flex-1">
           <Search size={16} className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 text-ink-600/40" />
           <input
             value={search}
@@ -173,6 +197,18 @@ export default function PartsWriteoffs() {
             <option value="all">Visos</option>
             {Object.entries(REASON_LABELS).map(([value, label]) => (
               <option key={value} value={value}>{label}</option>
+            ))}
+          </select>
+        </label>
+        <label className="flex shrink-0 items-center gap-2 text-xs font-medium text-ink-600/70">
+          Laikotarpis
+          <select
+            value={period}
+            onChange={(e) => setPeriod(e.target.value)}
+            className="input-field w-auto py-1.5 text-sm"
+          >
+            {PERIOD_OPTIONS.map((o) => (
+              <option key={o.value} value={o.value}>{o.label}</option>
             ))}
           </select>
         </label>
@@ -199,6 +235,8 @@ export default function PartsWriteoffs() {
         </button>
       </div>
 
+      {!loading && <WriteoffSummary summary={summary} />}
+
       <div className="panel overflow-hidden p-0">
         {loading ? (
           <div className="flex justify-center py-10 text-ink-600/50">
@@ -208,7 +246,7 @@ export default function PartsWriteoffs() {
           <div className="flex flex-col items-center gap-2 py-10 text-center">
             <PackageMinus className="text-ink-600/30" size={24} />
             <p className="text-sm text-ink-600/60">
-              {totalCount === 0 && debouncedSearch.trim() === "" && reasonFilter === "all"
+              {totalCount === 0 && debouncedSearch.trim() === "" && reasonFilter === "all" && period === "all"
                 ? "Nurašymų dar nėra."
                 : "Pagal paiešką nieko nerasta."}
             </p>

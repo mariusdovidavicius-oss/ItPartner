@@ -5,23 +5,7 @@ import {
 } from "lucide-react";
 import { supabase } from "../lib/supabaseClient";
 import { useAuth } from "../lib/AuthProvider";
-
-const PERIOD_OPTIONS = [
-  { value: "30d", label: "Paskutinės 30 d." },
-  { value: "ytd", label: "Šie metai" },
-  { value: "all", label: "Visada" }
-];
-
-function periodStart(period) {
-  const now = new Date();
-  if (period === "30d") {
-    const d = new Date(now);
-    d.setDate(d.getDate() - 30);
-    return d.toISOString();
-  }
-  if (period === "ytd") return new Date(now.getFullYear(), 0, 1).toISOString();
-  return null;
-}
+import { PERIOD_OPTIONS, periodStart } from "../lib/period";
 
 function emptyReasonBucket() {
   return { count: 0, qty: 0 };
@@ -60,8 +44,17 @@ function StatTile({ icon: Icon, label, value, accent, to }) {
 // "listPath" — /priedai/nurasymai arba /prietaisai/nurasymai, naudojamas
 // priežasties plytelėms (su ?priezastis= filtru). "itemsPath" — /priedai
 // arba /prietaisai, naudojamas TOP 5 įrašams (su ?q= paieška).
+// Plytelių nuorodos perduoda ir pasirinktą laikotarpį (?laikotarpis=), kad
+// atidaryta lentelė rodytų tuos pačius nurašymus, kuriuos suskaičiavo plytelė.
 function WriteoffStatsSection({ period, stats, topLabel, showWarranty = false, listPath, itemsPath }) {
   const maxTopQty = Math.max(1, ...stats.topItems.map((p) => p.qty));
+  const listLink = (reason) => {
+    const params = new URLSearchParams();
+    if (reason) params.set("priezastis", reason);
+    if (period !== "all") params.set("laikotarpis", period);
+    const qs = params.toString();
+    return qs ? `${listPath}?${qs}` : listPath;
+  };
   return (
     <>
       <div>
@@ -69,19 +62,19 @@ function WriteoffStatsSection({ period, stats, topLabel, showWarranty = false, l
           Nurašymai — {PERIOD_OPTIONS.find((o) => o.value === period)?.label.toLowerCase()}
         </p>
         <div className={`grid grid-cols-2 gap-3 ${showWarranty ? "lg:grid-cols-5" : "lg:grid-cols-4"}`}>
-          <StatTile icon={PackageMinus} label="Iš viso nurašyta" value={`${stats.totalQty} vnt.`} accent="bg-ink-700" to={listPath} />
-          <StatTile icon={Coins} label="Parduota" value={`${stats.revenue.toFixed(2)} €`} accent="bg-signal-teal" to={`${listPath}?priezastis=parduota`} />
-          <StatTile icon={Wrench} label="Panaudota remontui" value={`${stats.byReason.remontui.qty} vnt.`} accent="bg-signal-blue" to={`${listPath}?priezastis=remontui`} />
+          <StatTile icon={PackageMinus} label="Iš viso nurašyta" value={`${stats.totalQty} vnt.`} accent="bg-ink-700" to={listLink()} />
+          <StatTile icon={Coins} label="Parduota" value={`${stats.revenue.toFixed(2)} €`} accent="bg-signal-teal" to={listLink("parduota")} />
+          <StatTile icon={Wrench} label="Panaudota remontui" value={`${stats.byReason.remontui.qty} vnt.`} accent="bg-signal-blue" to={listLink("remontui")} />
           {showWarranty && (
             <StatTile
               icon={ShieldCheck}
               label="Garantiniai pakeitimai"
               value={`${stats.byReason.garantija?.qty ?? 0} vnt.`}
               accent="bg-ink-800"
-              to={`${listPath}?priezastis=garantija`}
+              to={listLink("garantija")}
             />
           )}
-          <StatTile icon={HelpCircle} label="Kita" value={`${stats.byReason.kita.qty} vnt.`} accent="bg-ink-600" to={`${listPath}?priezastis=kita`} />
+          <StatTile icon={HelpCircle} label="Kita" value={`${stats.byReason.kita.qty} vnt.`} accent="bg-ink-600" to={listLink("kita")} />
         </div>
       </div>
 
