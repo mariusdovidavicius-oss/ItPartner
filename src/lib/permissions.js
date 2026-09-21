@@ -25,9 +25,10 @@ export const PALLET_PERMISSION_KEYS = PALLET_PERMISSIONS.map((p) => p.key);
 
 // Prietaisų (įrangos) modulio teisės — atskiros IR nuo priedų (user_permissions),
 // IR nuo paletžų (pallet_permissions) teisių (žr. supabase/migrate_add_devices.sql).
-// Skirtingai nuo abiejų aukščiau — "view" čia realiai riboja ir SELECT (peržiūra
-// šiame modulyje NĖRA vieša). Naudojamas tiek frontend'e (PartsUsers.jsx,
-// AuthProvider.jsx), tiek api/create-user.js.
+// "view" NEBERIBOJA SELECT — peržiūra vieša kaip ir kituose moduliuose (žr.
+// supabase/migrate_devices_public_view.sql); ji liko sąraše tik kaip app-lygio
+// vartų raktas /statistika prietaisų skirtukui (Stats.jsx). Naudojamas tiek
+// frontend'e (PartsUsers.jsx, AuthProvider.jsx), tiek api/create-user.js.
 export const DEVICE_PERMISSIONS = [
   { key: "view", label: "Peržiūrėti" },
   { key: "edit", label: "Redaguoti" },

@@ -1,11 +1,12 @@
 # Sandėlio valdymo sistema (IAN skenavimas, paletės, siuntos) + priedų sandėlis
 
-Vidinė valdymo sistema, pakeičianti Excel/Google Sheets lentelę. Du domenai vienoje aplikacijoje:
+Vidinė valdymo sistema, pakeičianti Excel/Google Sheets lenteles. Trys moduliai vienoje aplikacijoje, visi naudoja bendrą prisijungimą (Supabase Auth), bet turi atskiras teisių lenteles:
 
-1. **Pagrindinis sandėlio srautas** — prekių registravimas pagal IAN kodą, realaus laiko lentelė, automatinis paskirstymas į paletes pagal gamintoją/tipą, palečių grupavimas į siuntas ir būsenų valdymas, paieška ir redagavimas. Šis srautas veikia be prisijungimo (`anon` prieiga).
-2. **Priedų (atsarginių dalių) sandėlio modulis** (`/priedai`) — atskira, nepriklausoma prekių apskaita su Supabase Auth prisijungimu ir granuliuotomis vartotojų teisėmis (peržiūra/redagavimas/trynimas/importas/admin).
+1. **Pagrindinis sandėlio srautas** (paletės/siuntos) — prekių registravimas pagal IAN kodą, realaus laiko lentelė, automatinis paskirstymas į paletes pagal gamintoją/tipą, palečių grupavimas į siuntas ir būsenų valdymas, paieška ir redagavimas. **Peržiūra vieša** (`anon`), o skenavimas/redagavimas (`scan` teisė) ir siuntų formavimas (`ship` teisė) reikalauja prisijungimo.
+2. **Priedų (atsarginių dalių) sandėlio modulis** (`/priedai`) — atskira, nepriklausoma prekių apskaita su granuliuotomis vartotojų teisėmis (peržiūra/redagavimas/trynimas/importas/admin). Peržiūra vieša.
+3. **Prietaisų (įrangos) modulis** (`/prietaisai`) — prietaisų likučiai pagal lokacijas, nurašymai ir garantinio serviso atsinešimų sąrašas. Peržiūra vieša.
 
-**Stack:** Vite + React + React Router + Tailwind CSS + Supabase (PostgreSQL, Auth, Realtime) + ExcelJS Excel eksportui/importui (CSV skaitomas savo, be priklausomybių, parseriu). Vercel serverless funkcija (`api/create-user.js`) vartotojų kūrimui.
+**Stack:** Vite + React + React Router + Tailwind CSS + Supabase (PostgreSQL, Auth, Realtime) + ExcelJS Excel eksportui/importui (CSV skaitomas savo, be priklausomybių, parseriu) + `pdfjs-dist` vidinių transporto PDF nuskaitymui (lazy-load). Trys Vercel serverless funkcijos (`api/`) vartotojų kūrimui, trynimui ir slaptažodžio keitimui.
 
 ## 1. Projekto struktūra
 
@@ -17,9 +18,13 @@ warehouse-app/
 ├── tailwind.config.js
 ├── postcss.config.js
 ├── vercel.json                    ← Vercel deploy konfigūracija
-├── .env.example                   ← nukopijuokite į .env
-├── api/
-│   └── create-user.js             ← Vercel serverless: naujo priedų modulio vartotojo kūrimas (service_role raktu)
+├── eslint.config.js
+├── .env.example                   ← šablonas; `.env` — produkcinės reikšmės, `.env.local` — lokalus testinis projektas (žr. 3 skyrių)
+├── .github/workflows/ci.yml       ← CI: `npm ci` → `npm run lint` → `npm run build` (push į `main` ir PR)
+├── api/                           ← Vercel serverless funkcijos (service_role raktu); kiekviena tikrina, kad kviečiantis yra prisijungęs adminas (`src/lib/adminAuth.js`)
+│   ├── create-user.js             ← naujo vartotojo kūrimas (ID + slaptažodis + teisės visuose trijuose moduliuose)
+│   ├── delete-user.js             ← vartotojo trynimas (negalima ištrinti savęs; istorija išlieka, `user_id` → NULL)
+│   └── update-user-password.js    ← vartotojo slaptažodžio keitimas
 ├── scripts/
 │   └── bootstrap-admin.mjs        ← vienkartinis CLI skriptas pirmam admin vartotojui sukurti
 ├── supabase/
@@ -39,18 +44,24 @@ warehouse-app/
 │       fix_device_totals_security_invoker, fix_import_devices_coalesce,
 │       fix_device_writeoffs_denormalize, devices_public_view,
 │       add_device_pickups, fix_device_pickups_two_step,
-│       add_device_pickup_unpick, add_device_min_quantity
-│       (žr. 2 skyrių)
+│       add_device_pickup_unpick, add_device_min_quantity,
+│       fix_device_pickup_stale_update_policy, fix_reset_test_data_stale_table,
+│       parts_location_text
+│       (žr. 2 skyrių; naujai DB migracijų NEREIKIA — pakanka `schema.sql`)
 └── src/
     ├── main.jsx
     ├── App.jsx                    ← maršrutai (routes)
     ├── index.css                   ← Tailwind + bendri stiliai
     ├── lib/
     │   ├── supabaseClient.js       ← Supabase klientas
-    │   ├── AuthProvider.jsx        ← prisijungimo kontekstas (Supabase Auth sesija, profilis, teisės, `signInWithId`)
+    │   ├── AuthProvider.jsx        ← prisijungimo kontekstas (Supabase Auth sesija, profilis, teisės — `hasPermission`/`hasPalletPermission`/`hasDevicePermission`, `signInWithId`)
     │   ├── authConstants.js        ← ID → vidinis el. paštas (`<id>@parts.local`) konvertavimas
-    │   ├── permissions.js          ← priedų modulio teisių sąrašas (view/edit/delete/import)
+    │   ├── adminAuth.js            ← TIK serverio pusei (`api/*`, `process.env`): patikrina kviečiančiojo access token'ą ir `is_admin`, grąžina `supabaseAdmin` klientą. Neimportuoti iš `src/pages`/`src/components`
+    │   ├── permissions.js          ← visų trijų modulių teisių sąrašai: priedų (view/edit/delete/import), paletžų (scan/ship), prietaisų (view/edit/delete/import)
     │   ├── constants.js            ← būsenų sąrašai (ITEM/PALLET/SHIPMENT) ir spalvos
+    │   ├── stockLevel.js           ← bendras `out`/`low`/`ok` būsenos ATVAIZDAVIMAS (eilutės spalva, kairės briaunos spalva, tooltip) — pati būsena skaičiuojama ne čia (priedams — DB stulpelis `stock_level`, prietaisams — `device_totals` view)
+    │   ├── writeoffReasons.js      ← nurašymo priežasčių sąrašai (priedai: parduota/remontui/kita; prietaisai: dar ir garantija), etikečių žemėlapis ir nurašymo „detalės“ (kaina/RMA/tekstas) formatavimas
+    │   ├── format.js               ← `escapeLike` (ILIKE paieškai) ir datų formatavimas (`lt-LT`)
     │   ├── destination.js          ← "paskirties" (destination) skaičiavimas iš gamintojo+tipo
     │   ├── excelHeaders.js         ← Excel stulpelių antraščių atspėjimas importuojant
     │   ├── readSpreadsheet.js      ← Excel (.xlsx, per ExcelJS) arba CSV (savas parseris) skaitymas į eilučių masyvą, naudojamas importo puslapiuose
@@ -64,25 +75,40 @@ warehouse-app/
     │   ├── StatusBadge.jsx
     │   └── DestinationBadge.jsx
     └── pages/
-        ├── ScanEntry.jsx             ← "/" — IAN skenavimas/registravimas, atviros paletės
-        ├── Pallets.jsx               ← "/paletes" — laukiančios paletės, rankinis siuntų formavimas, Excel eksportas
-        ├── PalletDetail.jsx          ← "/paletes/:id" — paletės turinys, būsenos keitimas, prekės pašalinimas
+        ├── ScanEntry.jsx             ← "/" — IAN skenavimas/registravimas, atviros paletės (peržiūra vieša; skenavimo forma ir veiksmai — su `scan` teise, kitaip rodoma peržiūros juosta)
+        ├── Pallets.jsx               ← "/paletes" — laukiančios paletės, rankinis siuntų formavimas, Excel eksportas (peržiūra ir eksportas vieši; palečių žymėjimas ir siuntos sukūrimas — su `ship` teise)
+        ├── PalletDetail.jsx          ← "/paletes/:id" — paletės turinys, būsenos keitimas, prekės pašalinimas (redagavimas — su `scan` teise)
         ├── ShipmentsList.jsx         ← "/siuntos" — jau išsiųstų siuntų sąrašas + IAN paieška tarp išvežtų prekių
         ├── ShipmentDetail.jsx        ← "/siuntos/:id" — siuntos turinys (paletės, prekės), Excel eksportas, etikečių spausdinimas
         ├── Parts.jsx                 ← "/priedai" — priedų sąrašas, paieška, Excel eksportas (peržiūra dabar vieša, be prisijungimo); su "edit"/"delete" teise — redagavimas ir priedo nurašymas (`writeoff_part` RPC)
-        ├── PartsImport.jsx           ← "/priedai/importas" — priedų importas iš Excel/CSV (reikia "import" teisės)
+        ├── Import.jsx                ← "/importas" — VIENAS bendras importo puslapis (tik adminams, `permission="admin"`): viršuje perjungiklis Priedai / Prietaisai / Katalogas, žemiau atitinkamas žemiau nurodytas komponentas (Import.jsx pats jokios importo logikos neturi)
+        ├── PartsImport.jsx           ← priedų importas iš Excel/CSV (nebeturi savo maršruto — rodomas `/importas` viduje, Priedai skirtuke)
         ├── PartsWriteoffs.jsx        ← "/priedai/nurasymai" — visų priedų nurašymų istorija, paieška/filtras pagal priežastį, atšaukimas, Excel eksportas (reikia "delete" teisės)
         ├── PartsUsers.jsx            ← "/priedai/vartotojai" — vartotojų kūrimas ir teisių valdymas (reikia "admin" teisės)
-        ├── CatalogImport.jsx         ← "/katalogas" — admin: katalogo (IAN → pavadinimas/gamintojas/tipas) importas iš Excel/CSV
+        ├── CatalogImport.jsx         ← katalogo (IAN → pavadinimas/gamintojas/tipas) importas iš Excel/CSV (nebeturi savo maršruto — rodomas `/importas` viduje, Katalogas skirtuke)
         ├── AdminReset.jsx            ← "/admin-reset" — admin: visų testavimo duomenų išvalymas (reikia "admin" teisės)
         ├── Devices.jsx               ← "/prietaisai" — prietaisų sąrašas su lokacijų išskleidimu, paieška, Excel eksportas (peržiūra vieša, be prisijungimo); su "delete" teise — trys veiksmų mygtukai (Redaguoti/Nurašyti/Ištrinti, `writeoff_device` RPC) ir istorija išskleistoje eilutėje; su "edit" teise — mygtukas „Atsinešti" TIESIOG PAGRINDINĖJE lentelės eilutėje (be išskleidimo), pridedantis punktą į `device_pickups`
-        ├── DevicesImport.jsx         ← "/prietaisai/importas" — prietaisų importas iš Excel/CSV (reikia "import" teisės)
+        ├── DevicesImport.jsx         ← prietaisų importas iš Excel/CSV (nebeturi savo maršruto — rodomas `/importas` viduje, Prietaisai skirtuke)
         ├── DeviceWriteoffs.jsx       ← "/prietaisai/nurasymai" — visų prietaisų nurašymų istorija, paieška/filtras pagal priežastį, atšaukimas, Excel eksportas (reikia "delete" teisės)
         ├── DevicePickups.jsx         ← "/prietaisai/atsinesimai" — garantinio serviso atsinešimų sąrašo peržiūra (laukia/paimta/nurašyta) ir valdymas (punktai PRIDEDAMI iš Devices.jsx, ne čia); pridėti/trinti/žymėti "paimta" — "edit" teisė, "Nurašyti" (kiekio atėmimas) — papildomai "delete" teisė
         └── Stats.jsx                 ← "/statistika" — VIENAS bendras statistikos puslapis visam projektui; viduje perjungiama Priedai/Prietaisai (rodomi tik moduliai, kuriuos vartotojas realiai mato), sandėlio ir nurašymų apžvalga, realaus laiko atnaujinimas
 ```
 
-Puslapis `/katalogas` yra administracinis — pasiekiamas tik tiesioginiu adresu, be nuorodos navigacijos meniu. `/priedai/importas`, `/priedai/nurasymai`, `/priedai/vartotojai`, `/admin-reset`, `/prietaisai/importas`, `/prietaisai/nurasymai` apsaugoti `RequirePermission` komponentu (žr. žemiau) — be prisijungimo rodoma prisijungimo forma tame pačiame puslapyje (`InlineLoginForm`, ne atskiras `/login` maršrutas), o be reikiamos teisės parodomas pranešimas apie teisių trūkumą. **Ir `/priedai`, IR `/prietaisai` sąrašo peržiūra yra vieša** (žr. `migrate_parts_public_view.sql` / `migrate_devices_public_view.sql`) — redagavimas/trynimas/nurašymas gated pačiame `Parts.jsx`/`Devices.jsx` puslapyje pagal turimą teisę; neprisijungusiam vartotojui abiejuose rodoma ta pati „Peržiūros režimas“ juosta.
+Maršrutai, apsaugoti `RequirePermission` komponentu (`src/App.jsx`):
+
+| Maršrutas | Reikalauja |
+|---|---|
+| `/priedai/nurasymai` | priedų `delete` |
+| `/priedai/vartotojai` | admin |
+| `/prietaisai/nurasymai` | prietaisų `delete` |
+| `/prietaisai/atsinesimai` | prietaisų `edit` |
+| `/statistika` | tik prisijungimo (bent vieno modulio `delete` teisė tikrinama pačiame `Stats.jsx`) |
+| `/importas` | admin |
+| `/admin-reset` | admin |
+
+Be prisijungimo šiuose maršrutuose rodoma prisijungimo forma tame pačiame puslapyje (`InlineLoginForm`, ne atskiras `/login` maršrutas), o be reikiamos teisės — pranešimas apie teisių trūkumą. Navigacijos meniu „Admin“ grupėje (tik adminams) yra `/importas` ir `/priedai/vartotojai`; **`/admin-reset` meniu nuorodos neturi** — pasiekiamas tik tiesioginiu adresu.
+
+**Visų trijų modulių peržiūra yra vieša** (`/`, `/paletes`, `/siuntos`, `/priedai`, `/prietaisai` — žr. `migrate_parts_public_view.sql`, `migrate_devices_public_view.sql`, `migrate_add_pallet_permissions.sql`). Redagavimas/trynimas/nurašymas/skenavimas gated pačiuose puslapiuose (`Parts.jsx`, `Devices.jsx`, `ScanEntry.jsx`, `Pallets.jsx`, `PalletDetail.jsx`) pagal turimą teisę, o tikrasis apribojimas — RLS politikos DB pusėje. Neturint teisės, `Parts`/`Devices`/`ScanEntry`/`PalletDetail` rodo „Peržiūros režimas“ juostą, o `Pallets` tiesiog paslepia žymėjimo ir siuntos sukūrimo veiksmus.
 
 ### Priedų modulio prisijungimas ir teisės
 
@@ -91,7 +117,7 @@ Vartotojai neturi el. pašto — jungiasi trumpu **ID** (pvz. `marius`), kuris f
 - per UI: `/priedai/vartotojai` → kviečia `api/create-user.js` (Vercel serverless funkcija, naudoja `SUPABASE_SERVICE_ROLE_KEY`; prieš kurdama patikrina, kad kviečiantis pats yra prisijungęs adminas);
 - arba pirmam adminui, kai dar nėra nė vieno: `node scripts/bootstrap-admin.mjs [id] [slaptazodis]` (numatyta `marius` / `admin`).
 
-Pagrindinis srautas (`items`/`pallets`/`shipments`/`catalog`) prisijungimo nereikalauja ir lieka pasiekiamas `anon` role.
+Pagrindinio srauto (`items`/`pallets`/`shipments`/`catalog`) **peržiūra (SELECT) lieka vieša** (`anon` role), bet INSERT/UPDATE/DELETE nuo `migrate_add_pallet_permissions.sql` reikalauja prisijungimo ir paletžų modulio teisės (`scan` arba `ship`, žr. `pallet_permissions` žemiau).
 
 ## 2. Duomenų bazės struktūra (Supabase SQL schema)
 
@@ -124,7 +150,7 @@ Pilna, dabartinė schema yra `supabase/schema.sql` faile (naujam projektui pakan
 | `raw_text`     | text         | Originalus pilnas tekstas iš Excel, neparsintas                    |
 | `imported_at`  | timestamptz  | Importavimo laikas                                                |
 
-Importuojama per `/katalogas` puslapį: vartotojas įkelia Excel/CSV, pasirenka stulpelį su tekstu (pvz. `"AURS Parkside PARS 7 A1-Service (356413)"`), sistema automatiškai ištraukia IAN skliausteliuose ir pavadinimą prieš juos, o gamintojo/tipo stulpeliai pasirenkami atskirai (nebūtini, antraštės „Gamintojas“/„Tipas“ atspėjamos automatiškai).
+Importuojama per `/importas` puslapį (Katalogas skirtukas, tik adminams): vartotojas įkelia Excel/CSV, pasirenka stulpelį su tekstu (pvz. `"AURS Parkside PARS 7 A1-Service (356413)"`), sistema automatiškai ištraukia IAN skliausteliuose ir pavadinimą prieš juos, o gamintojo/tipo stulpeliai pasirenkami atskirai (nebūtini, antraštės „Gamintojas“/„Tipas“ atspėjamos automatiškai).
 
 ### Paskirtis (`destination`) — dinaminis paletžų/siuntų grupavimas
 
@@ -193,7 +219,7 @@ Nepriklausomos nuo pagrindinio srauto (`items`/`pallets`/`shipments`/`catalog`).
 | `notes`              | text        | Pastaba                                                                |
 | `created_at`/`updated_at` | timestamptz | Sukūrimo/atnaujinimo laikas                                      |
 
-Importuojama per `/priedai/importas` (Excel) — kadangi `part_code` nėra unikalus, importas visada veikia kaip `insert` per `import_parts(rows, clear_existing)` RPC funkciją (SECURITY DEFINER; `clear_existing=true` prieš importą išvalo esamus įrašus, reikalauja `delete` teisės).
+Importuojama per `/importas` (Priedai skirtukas, Excel/CSV) — kadangi `part_code` nėra unikalus, importas visada veikia kaip `insert` per `import_parts(rows, clear_existing)` RPC funkciją (SECURITY DEFINER; `clear_existing=true` prieš importą išvalo esamus įrašus, reikalauja `delete` teisės).
 
 #### Lentelė `profiles` (vienas įrašas kiekvienam prisijungusiam vartotojui)
 
@@ -212,7 +238,16 @@ Importuojama per `/priedai/importas` (Excel) — kadangi `part_code` nėra unika
 | `permission` | text  | Viena iš: `view`, `edit`, `delete`, `import` (CHECK apribojimas)   |
 | `granted_at` | timestamptz | Suteikimo laikas                                             |
 
-Atskira lentelė (ne stulpeliai `profiles` viduje), kad naujas teises būtų galima pridėti be schema pakeitimų. Teisių sąrašas įtvirtintas **trijose vietose**, kurias reikia atnaujinti kartu: `src/lib/permissions.js` (front-end), `api/create-user.js` (serverless funkcija) ir SQL `check` apribojimas (`migrate_add_parts_permissions.sql`) — DB negali importuoti JS failo.
+Atskira lentelė (ne stulpeliai `profiles` viduje), kad naujas teises būtų galima pridėti be schema pakeitimų. Kiekvieno modulio teisių sąrašas įtvirtintas **dviejose vietose**, kurias reikia atnaujinti kartu: `src/lib/permissions.js` (JS pusė — iš jo importuoja ir front-end, ir `api/create-user.js`) ir SQL `check` apribojimas atitinkamoje lentelėje (`user_permissions` / `pallet_permissions` / `device_permissions`) — DB negali importuoti JS failo.
+
+#### Lentelė `pallet_permissions` (vartotojas × teisė, paletės/siuntos)
+
+Tokia pat struktūra kaip `user_permissions`, bet **atskira** lentelė ir dvi kitos teisės (`src/lib/permissions.js` → `PALLET_PERMISSIONS`; `migrate_add_pallet_permissions.sql`):
+
+- **`scan`** — kurti/keisti/trinti `items` ir `pallets` bei kurti/keisti `catalog` įrašus (skenavimas, paletės turinys, paletės uždarymas).
+- **`ship`** — kurti/keisti `shipments` ir keisti `pallets` (siuntų formavimas iš paruoštų palečių).
+
+`pallets` UPDATE leidžiamas su bet kuria iš šių dviejų teisių. `has_pallet_permission(uid, perm)` (`SECURITY DEFINER`) naudoja bendrą `is_admin()` kaip super-adminą. Peržiūra (SELECT) vieša.
 
 Pagalbinės SQL funkcijos `is_admin(uid)` ir `has_permission(uid, perm)` (abi `SECURITY DEFINER`) naudojamos RLS taisyklėse `parts`/`profiles`/`user_permissions` lentelėms, kad būtų išvengta RLS rekursijos.
 
@@ -326,10 +361,10 @@ Sąrašas matomas `/prietaisai/atsinesimai` puslapyje.
 1. Supabase projekto skydelyje eikite į **SQL Editor**.
 2. **Naujam projektui** — įkelkite ir paleiskite visą `supabase/schema.sql` failo turinį (jis apima ir katalogą, siuntas, dinaminę paskirtį, priedų modulį su prisijungimu ir teisėmis).
 3. **Esamam projektui, kuris kurtas anksčiau** — paleiskite trūkstamas `migrate_*.sql` migracijas chronologine tvarka (žr. failo pavadinimą ir komentarą jo viršuje; pilnas sąrašas — 1 skyriaus struktūroje).
-4. Tai sukurs lenteles, indeksus, RLS (Row Level Security) taisykles ir įjungs Realtime `items`/`pallets`/`shipments`/`parts` lentelėms.
+4. Tai sukurs lenteles, indeksus, RLS (Row Level Security) taisykles ir įjungs Realtime `items`/`pallets`/`shipments`/`parts`/`parts_writeoffs`/`devices`/`device_stock`/`device_writeoffs`/`device_pickups` lentelėms.
 5. Sukurkite pirmą admin vartotoją priedų moduliui: `node scripts/bootstrap-admin.mjs` (žr. 3 skyrių dėl `SUPABASE_SERVICE_ROLE_KEY`).
 
-> **Apie RLS:** `items`, `pallets`, `catalog` numatytos prieigai per **authenticated** vartotojus. `shipments` leidžia prieigą ir `anon`, ir `authenticated` (nes siuntų formavimas veikia be prisijungimo ekrano). `parts` IR `devices`/`device_stock` **peržiūra (select)** vieša `anon` ir `authenticated` (žr. `migrate_parts_public_view.sql` / `migrate_devices_public_view.sql`); jų insert/update/delete bei `parts_writeoffs`/`device_writeoffs`/`profiles`/`user_permissions`/`device_permissions` prieinamos tik `authenticated` vartotojams, papildomai apribotos pagal konkrečią teisę (`has_permission`/`has_device_permission`). Jei pagrindinį srautą naudosite tik vidiniame tinkle be prisijungimo ekrano, pakeiskite likusias `to authenticated` į `to anon` schema faile — bet tuomet svarbu, kad programa nebūtų pasiekiama iš viešo interneto be papildomos apsaugos (pvz. VPN, IP apribojimas).
+> **Apie RLS:** **peržiūra (SELECT) vieša** (`anon` ir `authenticated`) šioms lentelėms: `items`, `pallets`, `shipments`, `catalog` (žr. `migrate_add_pallet_permissions.sql`), `parts` (`migrate_parts_public_view.sql`), `devices`/`device_stock` (`migrate_devices_public_view.sql`). Jų INSERT/UPDATE/DELETE prieinami tik `authenticated` vartotojams ir papildomai apriboti pagal konkrečią teisę (`has_pallet_permission` / `has_permission` / `has_device_permission`). `parts_writeoffs`, `device_writeoffs`, `device_pickups`, `profiles`, `user_permissions`, `pallet_permissions`, `device_permissions` visiškai nėra vieši. Kadangi SELECT vieša, bet kas, žinantis `anon` raktą, gali skaityti šias lenteles — neįrašykite į jas jautrių duomenų.
 
 ## 3. Sujungimas su Supabase (.env kintamieji)
 
@@ -351,26 +386,58 @@ Sąrašas matomas `/prietaisai/atsinesimai` puslapyje.
    SUPABASE_SERVICE_ROLE_KEY=jusu-service-role-slaptas-raktas
    ```
 
-   `SUPABASE_SERVICE_ROLE_KEY` **NETURI** `VITE_` priešdėlio (kad Vite jo neįtrauktų į naršyklės bundle'ą) — naudojamas tik serverio pusėje (`api/create-user.js`, `scripts/bootstrap-admin.mjs`). Niekada jo nekomituoti į Git.
+   `SUPABASE_SERVICE_ROLE_KEY` **NETURI** `VITE_` priešdėlio (kad Vite jo neįtrauktų į naršyklės bundle'ą) — naudojamas tik serverio pusėje (`api/*`, `scripts/bootstrap-admin.mjs`). Niekada jo nekomituoti į Git.
 
-   `.env` failas jau įtrauktas į `.gitignore`, todėl jis nebus nusiųstas į Git.
+   `.env` ir `.env.local` failai įtraukti į `.gitignore`, todėl jie nebus nusiųsti į Git.
+
+### Dvi aplinkos: produkcija ir lokalus testas
+
+| Failas | Kam skirtas |
+|---|---|
+| `.env` | **Produkcinio** Supabase projekto reikšmės (gyvi duomenys). Vercel platformoje tos pačios reikšmės nustatomos per Project Settings → Environment Variables. |
+| `.env.local` | **Testinio** Supabase projekto reikšmės lokaliam vystymui. Vite ir `scripts/bootstrap-admin.mjs` jį skaito **po** `.env`, todėl `.env.local` reikšmės turi pirmenybę. |
+
+Taisyklė: lokaliai dirbama tik su testiniu projektu — taip `reset_test_data`, `clear_existing` importai, bandomieji nurašymai ir pan. niekada neliečia gyvų duomenų. Jei `.env.local` egzistuoja, o jo reikšmės neužpildytos, aplikacija lokaliai niekur nesijungs — tai sąmoningai saugu.
+
+> `.env.local` veikia ne tik `npm run dev`, bet ir lokaliam `npm run build`/`npm run preview` — lokaliai sukurtas `dist` turės testinio projekto adresą. Vercel to failo nemato (jis ne git'e), todėl produkcinis build'as naudoja Vercel aplinkos kintamuosius.
+
+#### Testinio Supabase projekto paruošimas (vieną kartą)
+
+1. [supabase.com](https://supabase.com) → **New project** (pvz. pavadinimas `itpartner-test`; pakanka nemokamo plano). Tai TURI būti atskiras projektas, ne produkcinis.
+2. **SQL Editor** → įklijuokite ir paleiskite VISĄ `supabase/schema.sql` turinį. Migracijų `migrate_*.sql` naujai DB paleisti NEREIKIA — `schema.sql` jau apima visas (žr. 2 skyrių).
+3. **Project Settings → API** → nukopijuokite `Project URL`, `anon public` ir `service_role` į `.env.local` (formatas — kaip aukščiau, ta pati kintamųjų trijulė). Įsitikinkite, kad tai ne tos pačios reikšmės kaip `.env`.
+4. Sukurkite pirmą admin vartotoją testiniame projekte:
+
+   ```bash
+   node scripts/bootstrap-admin.mjs <id> <slaptazodis>
+   ```
+
+   Skriptas pirmiausia atspausdina `Tikslinė DB: <host>` — **prieš tęsdami patikrinkite, kad tai testinio projekto adresas**, ne produkcinio. Be argumentų sukuria `marius` / `admin`, todėl testinei DB geriau nurodyti savo slaptažodį.
+5. `npm run dev` ir prisijunkite sukurtu ID + slaptažodžiu.
+
+Tuščioje testinėje DB nėra katalogo ir prekių — įkelkite bandomuosius duomenis per `/importas` (Katalogas / Priedai / Prietaisai).
+
+**Apribojimas lokaliai:** `npm run dev` (Vite) neaptarnauja `api/` funkcijų, todėl `/priedai/vartotojai` puslapyje **vartotojų kūrimas, trynimas ir slaptažodžio keitimas lokaliai neveiks** („Nepavyko pasiekti serverio“). Teisių ir admin žymos keitimas veikia (eina tiesiai į Supabase). Papildomus testinius vartotojus kurkite `bootstrap-admin.mjs` (jis kiekvieną pažymi admin, kurį galima nuimti `/priedai/vartotojai`). Nepaleiskite `vercel dev` ar `vercel env pull`, kol nepatikrinote, kokias reikšmes Vercel projekte turi Development aplinka — jos gali rodyti į produkcinį projektą.
 
 ## 4. Paleidimas lokaliai (localhost)
 
-Reikalinga: **Node.js 18+** (rekomenduojama 20+).
+Reikalinga: **Node.js 20.19+** (to reikalauja ESLint 10; CI naudoja Node 24).
 
 ```bash
 # 1. Įeikite į projekto katalogą
-cd warehouse-app
+cd <projekto katalogas>
 
 # 2. Įdiekite priklausomybes
 npm install
 
-# 3. Sukurkite .env failą (jei dar nepadarėte — žr. 3 skyrių)
-cp .env.example .env
+# 3. Sukonfigūruokite aplinką (žr. 3 skyrių): `.env.local` su TESTINIO Supabase projekto reikšmėmis
+#    (`.env.example` yra tik šablonas)
 
 # 4. Paleiskite dev serverį
 npm run dev
+
+# (pasirinktinai) lint prieš commit'ą — tą patį daro CI
+npm run lint
 ```
 
 Aplikacija bus pasiekiama adresu **http://localhost:5173**.
@@ -386,21 +453,21 @@ npm run preview    # patikrinti build'ą lokaliai
 
 ## 5. Kaip veikia pagrindiniai srautai
 
-### Palečių išvežimo srautas (be prisijungimo)
+### Palečių išvežimo srautas (peržiūra vieša; pakeitimai — su `scan`/`ship` teisėmis)
 
 - **Skenavimas (`/`)** — didelis mono šrifto laukas priima skenerio arba rankinę įvestį. Skeneris veikia kaip klaviatūra + Enter, todėl papildomos integracijos nereikia. Nuskenavus IAN kodą, sistema jį ieško `catalog` lentelėje, automatiškai užpildo pavadinimą ir apskaičiuoja paskirtį (gamintojas + tipas). Prekė automatiškai priskiriama atviros tos paskirties paletės (jei tokios nėra — sukuriama nauja), o skenuojant tą patį IAN toje pačioje paletėje pakartotinai — didinamas `quantity`, o ne kuriamas naujas įrašas. Puslapyje matomos visos šiuo metu atviros paletės su galimybe pažymėti „Išvežta“ (uždaryti).
 - **Paletės (`/paletes`)** — rodomos uždarytos, bet siuntai dar nepriskirtos paletės, filtruojamos pagal paskirtį; vartotojas pažymi checkbox'ais kelias paletes ir vienu veiksmu pažymi jas kaip išvežtas (sukuriama nauja siunta) arba atsisiunčia Excel sąrašą pagal paletę/pavadinimą/kiekį/IAN kodus. Nuoroda veda į `/siuntos` — jau išsiųstų siuntų istoriją.
 - **Paletės detalė (`/paletes/:id`)** — matomas visas paletės turinys (IAN, pavadinimas, kiekis, būsena), galima pašalinti prekę iš paletės arba keisti pačios paletės būseną (formuojama → uždaryta → išsiųsta → pristatyta).
 - **Siuntos (`/siuntos`)** — jau išsiųstų siuntų sąrašas (paletžų skaičius, vnt. suma), filtras pagal paskirtį, IAN paieška tarp visų kada nors išvežtų prekių (nukelia tiesiai į atitinkamos siuntos puslapį su iš anksto įvesta paieška).
 - **Siuntos detalė (`/siuntos/:id`)** — siuntos paletės su turiniu (išskleidžiama), Excel eksportas, palečių etikečių spausdinimas.
-- **Katalogo importas (`/katalogas`, admin)** — Excel/CSV įkėlimas, stulpelio su „Pavadinimas (IAN)“ tekstu pasirinkimas (IAN automatiškai ištraukiamas iš skliaustelių), nebūtini gamintojo/tipo stulpeliai paskirties skaičiavimui. Importas veikia partijomis (upsert pagal IAN), rodo progresą ir suvestinę (nauji/atnaujinti/nepavykę).
-- **Administravimas (`/admin-reset`, reikia prisijungimo + admin teisės)** — testavimo duomenų (prekės, paletės, siuntos, istorija, numeravimo skaitliukai) negrįžtamas išvalymas, apsaugotas patvirtinimo žodžiu.
+- **Katalogo importas (`/importas` → Katalogas skirtukas, admin)** — Excel/CSV įkėlimas, stulpelio su „Pavadinimas (IAN)“ tekstu pasirinkimas (IAN automatiškai ištraukiamas iš skliaustelių), nebūtini gamintojo/tipo stulpeliai paskirties skaičiavimui. Importas veikia partijomis (upsert pagal IAN), rodo progresą ir suvestinę (nauji/atnaujinti/nepavykę).
+- **Administravimas (`/admin-reset`, reikia prisijungimo + admin teisės)** — testavimo duomenų (prekės, paletės, siuntos, istorija, numeravimo skaitliukai) negrįžtamas išvalymas, apsaugotas patvirtinimo žodžiu. Meniu nuorodos neturi — tik tiesioginis adresas. **Niekada nepaleiskite prieš produkcinę DB** (žr. 3 skyrių — lokaliam vystymui naudokite testinį Supabase projektą).
 
 ### Priedų (spare parts) modulis
 
 - **Prisijungimas** — nėra atskiro `/login` maršruto: prisijungimo forma (`InlineLoginForm`) rodoma tiesiog viršutinėje juostoje (bet kuriame puslapyje) arba apsaugoto puslapio viduje, kai reikia konkrečios teisės. ID (ne el. paštas) + slaptažodis; sėkmingai prisijungus, puslapis persirenderina su prisijungusio turiniu vietoje peradresavimo.
 - **Priedai (`/priedai`, peržiūra vieša visiems be prisijungimo)** — priedų sąrašas su paieška, filtrais (lokacija, mažas/nulinis likutis pagal `stock_level`), puslapiavimu; su „edit“ teise galima keisti kiekį/pastabas/individualų min. likučio slenkstį (`min_quantity`)/laukus ar pridėti naują įrašą tiesiogiai lentelėje, su „delete“ — trinti arba nurašyti priedą (kiekio dalį, nurodant priežastį: parduota/remontui/kita — įrašoma į `parts_writeoffs`) bei atšaukti bet kurį savo priedo aktyvų nurašymą tiesiog išskleistoje istorijoje; Excel eksportas.
-- **Priedų importas (`/priedai/importas`, reikia „import“ teisės)** — Excel (.xlsx) arba CSV įkėlimas (`readSpreadsheet.js`), stulpelių atspėjimas (`excelHeaders.js`), importas per `import_parts` RPC (visada `insert`, nes `part_code` nėra unikalus); pasirinktinai prieš importą išvalyti esamus įrašus (reikia papildomai „delete“ teisės).
+- **Priedų importas (`/importas` → Priedai skirtukas; maršrutas tik adminams, o `import_parts` RPC DB pusėje reikalauja „import“ teisės)** — Excel (.xlsx) arba CSV įkėlimas (`readSpreadsheet.js`), stulpelių atspėjimas (`excelHeaders.js`), importas per `import_parts` RPC (visada `insert`, nes `part_code` nėra unikalus); pasirinktinai prieš importą išvalyti esamus įrašus (reikia papildomai „delete“ teisės).
 - **Nurašymai (`/priedai/nurasymai`, reikia „delete“ teisės)** — visų priedų nurašymų istorija (data, priedas, kiekis, priežastis, detalė, kas nurašė, būsena), paieška pagal priedo pavadinimą/kodą, filtras pagal priežastį, atšauktų nurašymų atšaukimas (`undo_writeoff` RPC — grąžina kiekį, žymi `undone_at`/`undone_by`, netrina audito įrašo), Excel eksportas (su „Būsena“ stulpeliu).
 - **Vartotojai (`/priedai/vartotojai`, reikia „admin“ teisės arba `is_admin`)** — naujo vartotojo (ID + slaptažodis) kūrimas per `api/create-user.js`, esamų vartotojų teisių (view/edit/delete/import) valdymas VISUOSE trijuose moduliuose (priedai/paletės/prietaisai, nepriklausomos viena nuo kitos) ir admin žymos perjungimas.
 
@@ -409,7 +476,7 @@ npm run preview    # patikrinti build'ą lokaliai
 Nepriklausomas nuo priedų (`parts`) modulio — savo teisės (`device_permissions`), naudoja tą patį prisijungimą (bendras `profiles`/ID+slaptažodis). **Peržiūra vieša** (kaip ir `/priedai`) — nuoroda navigacijos meniu rodoma visada, nepriklausomai nuo prisijungimo.
 
 - **Prietaisai (`/prietaisai`, peržiūra vieša visiems be prisijungimo)** — prietaisų (modelių, unikalių pagal IAN) sąrašas su paieška (pavadinimas/IAN/gamintojas), filtru pagal gamintoją IR filtru pagal likutį (Visi/Mažas likutis/Tik baigęsis — kadangi `devices` lentelė pati stock_level neturi, jis paskaičiuojamas per `device_totals`, tad filtras veikia dviem žingsniais: pirma surandami atitinkantys `id`, tada pagrindinė užklausa apribojama `.in()`); pagrindinėje lentelėje rodomas tik bendras kiekis (BE gamintojo stulpelio), lokacijos IR gamintojas matomi TIK išskleidus eilutę (paprastas tekstas „Lokacija X (Y vnt.)“ kiekvienai, be redagavimo). Eilutės nudažomos pagal `stock_level` (raudona = baigėsi, gintarinė = mažas likutis pagal `min_quantity` arba numatytą 3) — ta pati vizualinė kalba, kaip `/priedai`. Komentaras priklauso VISAM prietaisui (ne pavienei lokacijai) — su „edit“ teise redaguojamas kaip vienas laukas po lokacijų sąrašu; taip pat redaguoti paties prietaiso pavadinimą/IAN/gamintoją/min. likutį arba sukurti naują prietaisą. Su „delete“ teise — trys veiksmų mygtukai tokio pat dizaino kaip `/priedai`: **Redaguoti**, **Nurašyti** (modalas su lokacijos pasirinkimu, jei prietaisas turi kelias — nurašo dalį pasirinktos lokacijos kiekio, nurodant priežastį: parduota/remontui/garantija/kita — įrašoma į `device_writeoffs`, atšaukiama tiesiog išskleistoje istorijoje) ir **Ištrinti prietaisą** (su visais jo likučiais); pavienė lokacijos eilutė atskiro trynimo mygtuko nebeturi — likutis mažinamas tik per nurašymą arba viso prietaiso trynimą. Su „edit“ teise — TIESIOG PAGRINDINĖJE lentelės eilutėje (be išskleidimo) mažas mygtukas **„Atsinešti"**, atidarantis langelį (kiekis + nebūtina pastaba) ir pridedantis punktą į garantinio serviso atsinešimų sąrašą (`device_pickups`, žr. žemiau) — be poreikio dar kartą rinktis prietaisą, nes jis jau žinomas iš eilutės. Excel eksportas (kiekviena lokacija — sava eilutė, komentaras kartojasi kiekvienoje).
-- **Prietaisų importas (`/prietaisai/importas`, reikia „import“ teisės)** — Excel (.xlsx) arba CSV įkėlimas, stulpelių atspėjimas (Prietaisas/IAN/Kiekis/Lokacija/Komentaras/Gamintojas), importas per `import_devices` RPC — upsert pagal IAN į `devices` (pavadinimas/gamintojas/komentaras atnaujinami naujausia reikšme), tada upsert pagal (device_id, lokacija) į `device_stock` (kiekis perrašomas, ne dubliuojamas); pasirinktinai prieš importą išvalyti esamus duomenis (reikia papildomai „delete“ teisės).
+- **Prietaisų importas (`/importas` → Prietaisai skirtukas; maršrutas tik adminams, o `import_devices` RPC DB pusėje reikalauja „import“ teisės)** — Excel (.xlsx) arba CSV įkėlimas, stulpelių atspėjimas (Prietaisas/IAN/Kiekis/Lokacija/Komentaras/Gamintojas), importas per `import_devices` RPC — upsert pagal IAN į `devices` (pavadinimas/gamintojas/komentaras atnaujinami naujausia reikšme), tada upsert pagal (device_id, lokacija) į `device_stock` (kiekis perrašomas, ne dubliuojamas); pasirinktinai prieš importą išvalyti esamus duomenis (reikia papildomai „delete“ teisės).
 - **Prietaisų nurašymai (`/prietaisai/nurasymai`, reikia „delete“ teisės)** — visų prietaisų nurašymų istorija (data, prietaisas, IAN, lokacija, kiekis, priežastis, detalė, kas nurašė, būsena), paieška pagal prietaiso pavadinimą/IAN, filtras pagal priežastį, aktyvių nurašymų atšaukimas (`undo_device_writeoff` RPC), Excel eksportas.
 - **Atsinešimai (`/prietaisai/atsinesimai`, reikia „edit“ teisės; „Nurašyti“ — papildomai „delete“)** — garantinio serviso „ką atsinešti iš sandėlio" sąrašo peržiūra ir valdymas, dvi dalys: **Laukia** (punktai PRIDEDAMI iš `/prietaisai` sąrašo, ne šiame puslapyje — čia tik matomi: prietaisas, gamintojas, esamos lokacijos su kiekiais sandėlyje (padeda greitai susirasti), reikalingas kiekis, pastaba, data; filtras pagal gamintoją; galima ištrinti tik dar nepaimtą punktą) ir **Paimta** (paskutiniai 50, su Būsenos stulpeliu). Pažymėjus „Paimta" — pasirenki lokaciją, iš kurios faktiškai paėmei (`mark_device_picked` RPC) — TAI DAR NEKEIČIA `device_stock`; jei paspaudei per klaidą, mygtukas **„Atgal"** grąžina punktą į „Laukia" (`unpick_device_pickup` RPC), kol jis dar nenurašytas. Kiekis sumažinamas ir `device_writeoffs` audito įrašas (priežastis „Garantinis pakeitimas") sukuriamas TIK paspaudus atskirą mygtuką **„Nurašyti"** prie to paties punkto (`finalize_device_pickup` RPC) — du sąmoningai atskirti žingsniai, nes fizinis paėmimas ir apskaitos nurašymas realybėje įvyksta skirtingu metu. Virš sąrašo — **„Importas iš vidinės sistemos (PDF)"**: įkėlus vidinės (be API) sistemos „Internal transfer" PDF pažymą (nuskaitoma naršyklėje per `pdfjs-dist`, lazy-load'inama tik pareikalavus — žr. `src/lib/readTransferPdf.js`), kiekviena eilutė (pavadinimas, IAN, kiekis) susiejama su atitinkamu vienareikšmiu „Paimta, dar nenurašyta" punktu pagal IAN + kiekį; paspaudus „Vykdyti", automatiškai nurašomi TIK vienareikšmiai atitikmenys — visa kita (IAN nerastas / nerastas atitinkamas punktas / kiekis nesutampa / keli galimi punktai) tik pažymima peržiūrai, niekas automatiškai nekuriama ar spėjama. Pakeičia buvusį rankinį Google Sheets ("ką atsinešti") + Excel (nurašymo žurnalas) sekimą.
 
@@ -419,14 +486,15 @@ Nepriklausomas nuo priedų (`parts`) modulio — savo teisės (`device_permissio
 
 - Viršuje — mygtukų pora **Priedai** / **Prietaisai**, perjungianti, kurio modulio statistika rodoma; jei vartotojas turi teisę tik į vieną modulį, perjungiklis nerodomas, iškart matomas tas vienas. Jei neturi nė vieno — rodomas „Neturite teisės“ pranešimas (kaip `RequirePermission`).
 - Bendras „Laikotarpis“ filtras (30 d./šie metai/visada) galioja abiem moduliams vienodai.
-- **Priedų** vaizdas — nepakitęs nuo ankstesnio `/priedai/statistika`: stat kortelės (priedų įrašai, vienetai iš viso, mažo likučio/pasibaigę pagal `stock_level`), nurašymų suvestinė (iš viso nurašyta, parduota €, remontui, kita) iš `parts_writeoffs`, TOP 5 dažniausiai nurašomų priedų.
+- **Priedų** vaizdas — stat kortelės (priedų įrašai, vienetai iš viso, mažo likučio/pasibaigę pagal `stock_level`), nurašymų suvestinė (iš viso nurašyta, parduota €, remontui, kita) iš `parts_writeoffs`, TOP 5 dažniausiai nurašomų priedų.
 - **Prietaisų** vaizdas — analogiška struktūra, dabar IR su `stock_level`/`min_quantity` sąvoka (žr. `migrate_add_device_min_quantity.sql`): stat kortelės (prietaisų modelių, vienetų iš viso, mažo likučio, be likučio — abi paskutinės pagal `device_totals.stock_level`, lokacijų iš viso), ta pati nurašymų suvestinė iš `device_writeoffs` PAPILDYTA penkta plytele „Garantiniai pakeitimai" (`reason_type='garantija'`, žr. `/prietaisai/atsinesimai`), TOP 5 dažniausiai nurašomų prietaisų.
 - Abu vaizdai skaičiuoja tik iš AKTYVIŲ (neatšauktų) nurašymų ir atsinaujina realiu laiku per Supabase Realtime, kaip ir anksčiau.
 - **Plytelės — paspaudžiamos nuorodos, ne tik skaičiai.** Ten, kur prasminga (mažo likučio/pasibaigę, nurašymo priežastys, TOP 5 įrašai), plytelė nuveda į atitinkamą sąrašo puslapį su JAU PRITAIKYTU filtru per URL parametrus: `?likutis=low|out` (`/priedai`, `/prietaisai`), `?priezastis=<tipas>` (`/priedai/nurasymai`, `/prietaisai/nurasymai`), `?q=<pavadinimas>` (TOP 5 → paieška sąraše). Paskirties puslapiai šiuos parametrus perskaito TIK vieną kartą pradiniam būsenos užpildymui (`useSearchParams`, lazy `useState` init) — toliau filtrai valdomi įprastai per UI, URL vėliau nesinchronizuojamas atgal. Bendros sumos be prasmingo filtro (pvz. „Vienetų iš viso", „Lokacijų iš viso") lieka paprastos informacinės kortelės, ne nuorodos.
 
 ## 6. Tolimesni žingsniai (pasiūlymai)
 
-- Priedų modulyje jau yra Supabase Auth + teisėmis pagrįstas RLS (žr. 2 skyrių) — apsvarstyti tą patį pagrindiniam sandėlio srautui (`items`/`pallets`/`shipments`), pereinant nuo `anon` prie `authenticated` RLS taisyklių, jei prireiks atskirti darbuotojus.
+- **Sukonfigūruoti produkcinės DB atsargines kopijas** (Supabase → Database → Backups) — kol kas jų nėra, todėl bet kokia destruktyvi operacija produkcijoje (`reset_test_data`, `clear_existing` importas, `delete`) yra negrįžtama.
+- Migracijų valdymas per Supabase CLI (`supabase/migrations`) vietoj rankinio SQL Editor naudojimo — dabar produkcinė DB atnaujinama paleidžiant `migrate_*.sql` ranka, o `schema.sql` reikia palaikyti sinchronizuotą su jomis.
+- Automatiniai testai kritinei logikai (nurašymai, numeravimas, PDF sutikrinimas) — dabar CI tik `lint` ir `build`.
 - Naudoti realų barkodų skenerį (USB/Bluetooth HID skeneriai veikia be papildomo kodo, nes emuliuoja klaviatūrą).
 - Pridėti `item_history` peržiūros ekraną prekės detalėje, jei prireiks pilnos audito istorijos.
-- Apsvarstyti nuorodą į `/katalogas` navigacijoje su rolėmis pagrįsta prieiga, vietoj slapto tiesioginio adreso (kiti administraciniai puslapiai jau apsaugoti `RequirePermission`).
