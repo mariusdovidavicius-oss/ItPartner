@@ -6,6 +6,7 @@ import {
 } from "lucide-react";
 import { useAuth } from "../lib/AuthProvider";
 import InlineLoginForm from "./InlineLoginForm";
+import EnvBanner from "./EnvBanner";
 
 // Pilno pločio juosta virš viso puslapio (virš šoninio meniu ir turinio) —
 // visada matomas, nuolatinis prisijungimo/atsijungimo taškas nepriklausomai
@@ -270,6 +271,7 @@ export default function Layout() {
 
   return (
     <div className="flex min-h-screen flex-col bg-paper">
+      <EnvBanner />
       <TopBar />
       <div className="lg:flex lg:flex-1">
         {/* Desktop / tablet sidebar */}

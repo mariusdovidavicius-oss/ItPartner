@@ -397,6 +397,8 @@ Sąrašas matomas `/prietaisai/atsinesimai` puslapyje.
 | `.env` | **Produkcinio** Supabase projekto reikšmės (gyvi duomenys). Vercel platformoje tos pačios reikšmės nustatomos per Project Settings → Environment Variables. |
 | `.env.local` | **Testinio** Supabase projekto reikšmės lokaliam vystymui. Vite ir `scripts/bootstrap-admin.mjs` jį skaito **po** `.env`, todėl `.env.local` reikšmės turi pirmenybę. |
 
+**Aplinkos juosta.** Lokaliai (`npm run dev`) puslapio viršuje visada rodoma juosta (`src/components/EnvBanner.jsx`) su aktyvaus Supabase projekto host'u: **gintarinė „TESTINĖ DB“**, jei aktyvus URL skiriasi nuo `.env`, arba **raudona „DĖMESIO: PRODUKCINĖ DB“**, jei jis sutampa su `.env` (t.y. `.env.local` neužpildytas ar ištrintas ir dirbate su gyvais duomenimis). Palyginimą atlieka `vite.config.js`, todėl produkcijos adresas kode nekoduojamas. Produkciniame build'e (Vercel) juostos nėra. Jei matote raudoną — sustokite ir patikrinkite `.env.local`.
+
 Taisyklė: lokaliai dirbama tik su testiniu projektu — taip `reset_test_data`, `clear_existing` importai, bandomieji nurašymai ir pan. niekada neliečia gyvų duomenų. Jei `.env.local` egzistuoja, o jo reikšmės neužpildytos, aplikacija lokaliai niekur nesijungs — tai sąmoningai saugu.
 
 > `.env.local` veikia ne tik `npm run dev`, bet ir lokaliam `npm run build`/`npm run preview` — lokaliai sukurtas `dist` turės testinio projekto adresą. Vercel to failo nemato (jis ne git'e), todėl produkcinis build'as naudoja Vercel aplinkos kintamuosius.
