@@ -27,6 +27,12 @@ export default function PalletDetail() {
   const [removingId, setRemovingId] = useState(null);
   const [removeError, setRemoveError] = useState("");
   const [statusError, setStatusError] = useState("");
+  // Pastabos juodraštis inicijuojamas TIK pirmą kartą atidarius konkrečią paletę —
+  // saugo, kuriai paletei jis jau inicijuotas, kad vėlesni load() iškvietimai
+  // (realtime „items“/„pallets“ įvykiai, prietaiso pridėjimas/redagavimas šiame
+  // puslapyje) neperrašytų dar neišsaugoto vartotojo teksto (ta pati problema ir
+  // sprendimas kaip ScanEntry.jsx palletNotesDrafts).
+  const notesInitRef = useRef(null);
 
   useEffect(() => {
     load();
@@ -48,7 +54,10 @@ export default function PalletDetail() {
       .eq("pallet_id", id)
       .order("updated_at", { ascending: false });
     setPallet(p);
-    setNotesDraft(p?.notes || "");
+    if (notesInitRef.current !== id) {
+      notesInitRef.current = id;
+      setNotesDraft(p?.notes || "");
+    }
     setItems(its || []);
     setLoading(false);
   }

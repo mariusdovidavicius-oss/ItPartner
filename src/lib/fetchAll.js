@@ -7,12 +7,19 @@
 // builder'is po await vėl naudoti negalima).
 export async function fetchAllRows(makeQuery, { pageSize = 1000, maxPages = 50 } = {}) {
   const rows = [];
-  for (let page = 0; page < maxPages; page++) {
+  let page = 0;
+  for (; page < maxPages; page++) {
     const from = page * pageSize;
     const { data, error } = await makeQuery().range(from, from + pageSize - 1);
     if (error) throw error;
     rows.push(...(data || []));
     if (!data || data.length < pageSize) break;
+  }
+  // Pasiekus maxPages ribą (numatytai 50 000 eilučių), rezultatas tyliai
+  // nutraukiamas — įspėjame bent konsolėje, kad toks trumpinimas nepraeitų
+  // visiškai nepastebėtas (sumos/eksportai atrodytų teisingi, bet būtų neišsamūs).
+  if (page === maxPages) {
+    console.warn(`fetchAllRows: pasiektas ${maxPages * pageSize} eilučių limitas — rezultatas gali būti nepilnas.`);
   }
   return rows;
 }

@@ -148,7 +148,7 @@ function WriteoffStatsSection({ periodState, stats, topLabel, showWarranty = fal
               return (
                 <li key={`${p.code}|${p.label}`}>
                   <Link
-                    to={`${itemsPath}?q=${encodeURIComponent(p.code || p.label)}`}
+                    to={`${itemsPath}?q=${encodeURIComponent(p.code || p.label || "")}`}
                     className="-m-1 block rounded-lg p-1 transition-colors hover:bg-ink-900/[0.03]"
                   >
                     {bar}
@@ -188,7 +188,7 @@ function PartsStatsPanel({ periodState }) {
   return (
     <PanelShell query={query}>
       {(data) => {
-        const o = data.overview;
+        const o = data.overview ?? {};
         const stats = normalizeWriteoffStats(data, PART_REASON_KEYS, (t) => t.model || "");
         return (
           <>
@@ -232,7 +232,7 @@ function DeviceStatsPanel({ periodState }) {
   return (
     <PanelShell query={query}>
       {(data) => {
-        const o = data.overview;
+        const o = data.overview ?? {};
         // Prietaisams "sub" — IAN (modelio lauko prietaisai neturi)
         const stats = normalizeWriteoffStats(data, DEVICE_REASON_KEYS, (t) => t.code || "");
         return (

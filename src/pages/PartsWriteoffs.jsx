@@ -42,6 +42,7 @@ export default function PartsWriteoffs() {
   const [exporting, setExporting] = useState(false);
   const [undoingId, setUndoingId] = useState(null);
   const [actionError, setActionError] = useState("");
+  const [summaryError, setSummaryError] = useState("");
 
   useEffect(() => {
     const t = setTimeout(() => setDebouncedSearch(search), SEARCH_DEBOUNCE_MS);
@@ -77,24 +78,41 @@ export default function PartsWriteoffs() {
     // Suvestinei skaičiuojami tik aktyvūs (neatšaukti) nurašymai — kaip ir /statistika.
     if (opts.activeOnly) query = query.is("undone_at", null);
 
-    return query.order("created_at", { ascending: false });
+    // "id" — antrinis rikiavimo raktas: "created_at" nėra unikalus (kelios
+    // eilutės gali gimti tą pačią sekundę), todėl be jo puslapiavimas
+    // (fetchAllRows serijoje ar .range() tarp dviejų atskirų užklausų) galėtų
+    // nenuosekliai praleisti/dubliuoti eilutę ties puslapio riba.
+    return query.order("created_at", { ascending: false }).order("id", { ascending: false });
   }
 
+  // Užklausos numeris — apsaugo nuo pasenusio atsakymo: jei filtrai pasikeičia
+  // greičiau, nei spėja grįžti ankstesnis load() (pvz. paspaudus kelis
+  // laikotarpio/priežasties filtrus iš eilės), pasenusio atsakymo setState'ai
+  // ignoruojami, kad ekranas neliktų rodyti nebeaktualaus filtro rezultatų.
+  const requestIdRef = useRef(0);
+
   async function load() {
+    const requestId = ++requestIdRef.current;
     setLoading(true);
+    setSummaryError("");
     const from = page * pageSize;
     const to = from + pageSize - 1;
     // "parts!inner(id)" — paieškos filtras (name/part_code/main_model) remiasi
     // parts join'u, todėl jis turi būti ir suvestinės užklausoje.
-    const [{ data, count }, summaryRows] = await Promise.all([
+    const [{ data, count }, summaryResult] = await Promise.all([
       buildQuery({ count: "exact" }).range(from, to),
       fetchAllRows(() =>
         buildQuery({ select: "quantity, reason_type, price, parts!inner(id)", activeOnly: true })
-      ).catch(() => null)
+      ).then(
+        (rows) => ({ rows }),
+        (error) => ({ error })
+      )
     ]);
+    if (requestId !== requestIdRef.current) return; // atėjo pasenęs atsakymas
     setWriteoffs(data || []);
     setTotalCount(count ?? 0);
-    setSummary(summaryRows ? summarizeWriteoffs(summaryRows) : null);
+    setSummary(summaryResult.rows ? summarizeWriteoffs(summaryResult.rows) : null);
+    if (summaryResult.error) setSummaryError("Nepavyko įkelti suvestinės sumos.");
     setLoading(false);
   }
 
@@ -230,7 +248,16 @@ export default function PartsWriteoffs() {
         </button>
       </div>
 
-      {!loading && <WriteoffSummary summary={summary} />}
+      {!loading && (
+        <div className="flex flex-wrap items-center gap-3">
+          <WriteoffSummary summary={summary} />
+          {summaryError && (
+            <span className="flex items-center gap-1.5 text-xs font-medium text-signal-red">
+              <AlertCircle size={13} /> {summaryError}
+            </span>
+          )}
+        </div>
+      )}
 
       <div className="panel overflow-hidden p-0">
         {loading ? (
@@ -241,7 +268,11 @@ export default function PartsWriteoffs() {
           <div className="flex flex-col items-center gap-2 py-10 text-center">
             <PackageMinus className="text-ink-600/30" size={24} />
             <p className="text-sm text-ink-600/60">
-              {totalCount === 0 && debouncedSearch.trim() === "" && reasonFilter === "all" && periodState.period === "all"
+              {totalCount === 0 &&
+              debouncedSearch.trim() === "" &&
+              reasonFilter === "all" &&
+              !periodRange(periodState).from &&
+              !periodRange(periodState).to
                 ? "Nurašymų dar nėra."
                 : "Pagal paiešką nieko nerasta."}
             </p>

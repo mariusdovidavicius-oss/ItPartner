@@ -49,6 +49,9 @@ const KINDS = {
 };
 
 // stock_level DESC → "out" prieš "low"; tada mažiausias kiekis pirmas.
+// "id" — antrinis raktas: nei kiekis, nei pavadinimas nėra unikalūs, todėl be
+// jo fetchAllRows puslapiavimas (kelios atskiros .range() užklausos) galėtų
+// ties riboje nenuosekliai praleisti arba dubliuoti eilutę.
 function baseQuery(cfg) {
   return supabase
     .from(cfg.table)
@@ -56,7 +59,8 @@ function baseQuery(cfg) {
     .in("stock_level", LEVELS)
     .order("stock_level", { ascending: false })
     .order(cfg.quantityField, { ascending: true })
-    .order("name", { ascending: true });
+    .order("name", { ascending: true })
+    .order("id", { ascending: true });
 }
 
 // "count" — pasibaigusių + mažo likučio skaičius iš sandėlio būklės plytelių;

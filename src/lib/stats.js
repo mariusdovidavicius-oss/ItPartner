@@ -20,12 +20,19 @@ export function normalizeWriteoffStats(json, reasonKeys, subOf) {
     totalQty: Number(w.total_qty ?? 0),
     revenue: Number(w.revenue ?? 0),
     byReason,
-    topItems: (json?.top_items ?? []).map((t) => ({
-      label: t.label,
-      code: t.code,
-      sub: subOf(t),
-      qty: Number(t.qty ?? 0)
-    }))
+    topItems: (json?.top_items ?? []).map((t) => {
+      const sub = subOf(t);
+      return {
+        label: t.label,
+        code: t.code,
+        // Kai atskiro pavadinimo nėra, SQL pusėje "label" jau krenta atgal ant
+        // kodo (žr. migrate_add_stats_functions.sql) — jei "sub" tada sutaptų
+        // su "label" (pvz. prietaisas be pavadinimo: label = sub = IAN), jo
+        // nerodome, kad ta pati reikšmė neatsikartotų eilutėje du kartus.
+        sub: sub && sub !== t.label ? sub : "",
+        qty: Number(t.qty ?? 0)
+      };
+    })
   };
 }
 
