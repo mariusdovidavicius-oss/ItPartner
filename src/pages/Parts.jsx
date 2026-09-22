@@ -11,6 +11,7 @@ import { escapeLike } from "../lib/format";
 import { PART_WRITEOFF_REASONS as WRITEOFF_REASONS } from "../lib/writeoffReasons";
 
 const PAGE_SIZE_OPTIONS = [10, 25, 50, 100];
+const HISTORY_PAGE_SIZE = 5; // po kiek nurašymų istorijos įrašų rodoma iš karto (žr. "Rodyti daugiau")
 // Numatytasis mažo likučio slenkstis, kai priedas neturi savo individualaus
 // "min_quantity" — turi atitikti DB pusės "stock_level" generuojamo
 // stulpelio fallback reikšmę (žr. migrate_parts_min_quantity.sql).
@@ -46,12 +47,15 @@ export default function Parts() {
   const [expandedIds, setExpandedIds] = useState(new Set()); // part id -> eilutė išskleista (foto vieta, pilnas suderinamų modelių tekstas, pastaba, redagavimas)
   const [notesDrafts, setNotesDrafts] = useState({}); // part id -> pastabos juodraštis
   const [savingNotesId, setSavingNotesId] = useState(null);
+  const [priceDrafts, setPriceDrafts] = useState({}); // part id -> kainos juodraštis (rodoma/redaguojama TIK išskleidus eilutę)
+  const [savingPriceId, setSavingPriceId] = useState(null);
   const [editingPart, setEditingPart] = useState(null);
   const [creating, setCreating] = useState(false);
   const [deletingId, setDeletingId] = useState(null);
   const [writeoffPart, setWriteoffPart] = useState(null);
   const [writeoffHistory, setWriteoffHistory] = useState({}); // part id -> nurašymų sąrašas
   const [loadingHistoryId, setLoadingHistoryId] = useState(null);
+  const [historyLimits, setHistoryLimits] = useState({}); // part id -> kiek istorijos įrašų šiuo metu rodoma (numatyta HISTORY_PAGE_SIZE)
   const [undoingId, setUndoingId] = useState(null);
   const [exporting, setExporting] = useState(false);
   const [locationFilter, setLocationFilter] = useState(""); // "" = visos lokacijos
@@ -75,7 +79,7 @@ export default function Parts() {
   // įrašai), kad paieška/filtrai neišsiskirtų tarp dviejų vietų.
   function buildQuery(opts = {}) {
     let query = supabase.from("parts").select(
-      "id, location, main_model, part_code, name, quantity, min_quantity, stock_level, online_store, compatible_models, notes",
+      "id, location, main_model, part_code, name, quantity, min_quantity, stock_level, online_store, compatible_models, notes, price",
       opts.count ? { count: opts.count } : undefined
     );
 
@@ -125,6 +129,14 @@ export default function Parts() {
       const next = {};
       list.forEach((p) => {
         next[p.id] = p.id in prev ? prev[p.id] : (p.notes || "");
+      });
+      return next;
+    });
+
+    setPriceDrafts((prev) => {
+      const next = {};
+      list.forEach((p) => {
+        next[p.id] = p.id in prev ? prev[p.id] : (p.price != null ? String(p.price) : "");
       });
       return next;
     });
@@ -272,6 +284,20 @@ export default function Parts() {
     const { error } = await supabase.from("parts").update({ notes: value.trim() || null }).eq("id", part.id);
     setSavingNotesId(null);
     if (error) setActionError(`Nepavyko išsaugoti pastabos: ${error.message}`);
+  }
+
+  // Kaina — nebūtina, orientacinė priedo savybė (atskira nuo nurašymo metu
+  // įvedamos parts_writeoffs.price). Tuščias laukas = kaina nenurodyta (null).
+  async function handleSavePrice(part) {
+    const raw = (priceDrafts[part.id] ?? "").trim().replace(",", ".");
+    if (raw !== "" && (!Number.isFinite(Number(raw)) || Number(raw) < 0)) {
+      setActionError("Kaina turi būti teigiamas skaičius.");
+      return;
+    }
+    setSavingPriceId(part.id);
+    const { error } = await supabase.from("parts").update({ price: raw === "" ? null : Number(raw) }).eq("id", part.id);
+    setSavingPriceId(null);
+    if (error) setActionError(`Nepavyko išsaugoti kainos: ${error.message}`);
   }
 
   // Grąžina klaidos tekstą, jei nepavyko — PartFormModal tada rodo ją
@@ -482,6 +508,7 @@ export default function Parts() {
                   const changed = draft !== String(p.quantity ?? 0);
                   const expanded = expandedIds.has(p.id);
                   const notesDraft = notesDrafts[p.id] ?? "";
+                  const priceDraft = priceDrafts[p.id] ?? "";
                   const level = p.stock_level || "ok";
                   const rowTone = stockLevelRowTone(level);
                   return (
@@ -612,6 +639,42 @@ export default function Parts() {
                                 </div>
 
                                 <div>
+                                  <p className="mb-1 text-xs font-semibold text-ink-600/70">Kaina</p>
+                                  {canEdit ? (
+                                    <div className="flex items-start gap-2">
+                                      <input
+                                        type="number"
+                                        min={0}
+                                        step="0.01"
+                                        value={priceDraft}
+                                        onChange={(e) =>
+                                          setPriceDrafts((prev) => ({ ...prev, [p.id]: e.target.value }))
+                                        }
+                                        placeholder="Nenurodyta"
+                                        className="input-field w-32 py-2 text-sm"
+                                      />
+                                      <span className="self-center text-sm text-ink-600/50">€</span>
+                                      <button
+                                        type="button"
+                                        onClick={() => handleSavePrice(p)}
+                                        disabled={
+                                          savingPriceId === p.id ||
+                                          priceDraft === (p.price != null ? String(p.price) : "")
+                                        }
+                                        className="btn-secondary shrink-0 px-2.5 py-2"
+                                        aria-label="Išsaugoti kainą"
+                                      >
+                                        {savingPriceId === p.id
+                                          ? <Loader2 size={14} className="animate-spin" />
+                                          : <Save size={14} />}
+                                      </button>
+                                    </div>
+                                  ) : (
+                                    <p className="text-sm text-ink-800">{p.price != null ? `${p.price} €` : "—"}</p>
+                                  )}
+                                </div>
+
+                                <div>
                                   <p className="mb-1 text-xs font-semibold text-ink-600/70">Pastaba</p>
                                   {canEdit ? (
                                     <div className="flex items-start gap-2">
@@ -688,8 +751,9 @@ export default function Parts() {
                                     ) : (writeoffHistory[p.id] || []).length === 0 ? (
                                       <p className="text-sm text-ink-600/50">Nurašymų nebuvo.</p>
                                     ) : (
+                                      <>
                                       <ul className="space-y-1">
-                                        {writeoffHistory[p.id].map((w) => (
+                                        {writeoffHistory[p.id].slice(0, historyLimits[p.id] ?? HISTORY_PAGE_SIZE).map((w) => (
                                           <li
                                             key={w.id}
                                             className={`flex flex-wrap items-center justify-between gap-x-2 gap-y-1 text-xs ${
@@ -721,6 +785,34 @@ export default function Parts() {
                                           </li>
                                         ))}
                                       </ul>
+                                      {writeoffHistory[p.id].length > HISTORY_PAGE_SIZE && (
+                                        <div className="mt-1.5 flex gap-3">
+                                          {(historyLimits[p.id] ?? HISTORY_PAGE_SIZE) < writeoffHistory[p.id].length && (
+                                            <button
+                                              type="button"
+                                              onClick={() =>
+                                                setHistoryLimits((prev) => ({
+                                                  ...prev,
+                                                  [p.id]: (prev[p.id] ?? HISTORY_PAGE_SIZE) + HISTORY_PAGE_SIZE
+                                                }))
+                                              }
+                                              className="text-xs font-medium text-signal-orange underline decoration-dotted hover:text-signal-orange/80"
+                                            >
+                                              Rodyti daugiau ({writeoffHistory[p.id].length - (historyLimits[p.id] ?? HISTORY_PAGE_SIZE)} liko)
+                                            </button>
+                                          )}
+                                          {(historyLimits[p.id] ?? HISTORY_PAGE_SIZE) > HISTORY_PAGE_SIZE && (
+                                            <button
+                                              type="button"
+                                              onClick={() => setHistoryLimits((prev) => ({ ...prev, [p.id]: HISTORY_PAGE_SIZE }))}
+                                              className="text-xs font-medium text-ink-600/60 underline decoration-dotted hover:text-ink-900"
+                                            >
+                                              Rodyti mažiau
+                                            </button>
+                                          )}
+                                        </div>
+                                      )}
+                                      </>
                                     )}
                                   </div>
                                 )}
@@ -805,10 +897,23 @@ function WriteoffModal({ part, onClose, onSave }) {
   const [quantity, setQuantity] = useState("1");
   const [reasonType, setReasonType] = useState("");
   const [price, setPrice] = useState("");
+  const [priceTouched, setPriceTouched] = useState(false); // true, kai vartotojas pats redagavo kainą
   const [rma, setRma] = useState("");
   const [reason, setReason] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
+
+  // Pasirinkus priežastį "parduota", kaina automatiškai apskaičiuojama iš
+  // priedo orientacinės kainos (p.price) × nurašomas kiekis — TIK kol
+  // vartotojas jos pats nepataisė (priceTouched), kad rankinis pataisymas
+  // nebūtų perrašytas vėliau pakeitus kiekį. Kai priedas neturi nurodytos
+  // kainos, laukas lieka tuščias — įvedama rankiniu būdu, kaip ir anksčiau.
+  useEffect(() => {
+    if (reasonType !== "parduota" || priceTouched || part.price == null) return;
+    const qty = Math.round(Number(quantity));
+    if (!qty || qty <= 0) return;
+    setPrice((part.price * qty).toFixed(2));
+  }, [reasonType, quantity, part.price, priceTouched]);
 
   async function submit(e) {
     e.preventDefault();
@@ -905,12 +1010,13 @@ function WriteoffModal({ part, onClose, onSave }) {
                 min={0}
                 step="0.01"
                 value={price}
-                onChange={(e) => setPrice(e.target.value)}
+                onChange={(e) => { setPrice(e.target.value); setPriceTouched(true); }}
                 className="input-field"
                 required
               />
               <p className="mt-1 text-xs text-ink-600/50">
                 Bendra suma už {Number(quantity) || 0} vnt., ne kaina už vienetą.
+                {part.price != null && !priceTouched && " Užpildyta automatiškai iš priedo kainos — galite keisti."}
               </p>
             </div>
           )}

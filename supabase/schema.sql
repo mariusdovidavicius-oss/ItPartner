@@ -774,9 +774,11 @@ create table if not exists public.parts (
   online_store       boolean not null default false,   -- "El. parduotuvė" TAIP/NE
   compatible_models  text,                              -- "Suderinami Modeliai", žalias tekstas
   notes              text,                              -- laisva pastaba
+  price              numeric(10, 2),                    -- orientacinė priedo kaina (€); NULL = nenurodyta; žr. migrate_add_part_price.sql
   created_at         timestamptz not null default now(),
   updated_at         timestamptz not null default now(),
   constraint parts_min_quantity_check check (min_quantity is null or min_quantity >= 0),
+  constraint parts_price_check check (price is null or price >= 0),
   -- Generuojamas (stored) stulpelis — leidžia /priedai likučio filtrui
   -- filtruoti per PostgREST paprastu .eq("stock_level", …), nes PostgREST
   -- negali filtruoti lygindamas du tos pačios eilutės stulpelius (quantity
