@@ -11,6 +11,7 @@ import { escapeLike } from "../lib/format";
 import { DEVICE_WRITEOFF_REASONS as WRITEOFF_REASONS } from "../lib/writeoffReasons";
 
 const PAGE_SIZE_OPTIONS = [10, 25, 50, 100];
+const HISTORY_PAGE_SIZE = 5; // po kiek nurašymų istorijos įrašų rodoma iš karto (žr. "Rodyti daugiau")
 // Numatytasis mažo likučio slenkstis, kai prietaisas neturi savo
 // individualaus "min_quantity" — turi atitikti DB pusės device_totals
 // VIEW stock_level fallback reikšmę (žr. migrate_add_device_min_quantity.sql).
@@ -577,6 +578,11 @@ function DeviceDetail({
   const [notesDraft, setNotesDraft] = useState(device.notes || "");
   const [savingNotes, setSavingNotes] = useState(false);
   const notesChanged = notesDraft !== (device.notes || "");
+  // Nurašymų istorija: iš pradžių rodoma tik HISTORY_PAGE_SIZE naujausių, likę
+  // atskleidžiami "Rodyti daugiau" — šis komponentas atskiras kiekvienam
+  // prietaisui (žr. Fragment key={d.id} tėviniame sąraše), tad vietinė būsena
+  // savaime izoliuota tarp prietaisų.
+  const [historyLimit, setHistoryLimit] = useState(HISTORY_PAGE_SIZE);
 
   async function saveNotes() {
     setSavingNotes(true);
@@ -686,8 +692,9 @@ function DeviceDetail({
             ) : writeoffHistory.length === 0 ? (
               <p className="text-sm text-ink-600/50">Nurašymų nebuvo.</p>
             ) : (
+              <>
               <ul className="space-y-1">
-                {writeoffHistory.map((w) => (
+                {writeoffHistory.slice(0, historyLimit).map((w) => (
                   <li
                     key={w.id}
                     className={`flex flex-wrap items-center justify-between gap-x-2 gap-y-1 text-xs ${
@@ -721,6 +728,29 @@ function DeviceDetail({
                   </li>
                 ))}
               </ul>
+              {writeoffHistory.length > HISTORY_PAGE_SIZE && (
+                <div className="mt-1.5 flex gap-3">
+                  {historyLimit < writeoffHistory.length && (
+                    <button
+                      type="button"
+                      onClick={() => setHistoryLimit((n) => n + HISTORY_PAGE_SIZE)}
+                      className="text-xs font-medium text-signal-orange underline decoration-dotted hover:text-signal-orange/80"
+                    >
+                      Rodyti daugiau ({writeoffHistory.length - historyLimit} liko)
+                    </button>
+                  )}
+                  {historyLimit > HISTORY_PAGE_SIZE && (
+                    <button
+                      type="button"
+                      onClick={() => setHistoryLimit(HISTORY_PAGE_SIZE)}
+                      className="text-xs font-medium text-ink-600/60 underline decoration-dotted hover:text-ink-900"
+                    >
+                      Rodyti mažiau
+                    </button>
+                  )}
+                </div>
+              )}
+              </>
             )}
           </div>
         )}
