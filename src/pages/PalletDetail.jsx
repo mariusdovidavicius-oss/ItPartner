@@ -125,6 +125,10 @@ export default function PalletDetail() {
       .select("id, quantity")
       .eq("ian", trimmedIan)
       .eq("pallet_id", id)
+      // Paletėje gali būti kelios to paties IAN eilutės (skirtingi variantai,
+      // žr. catalog_variants) — didinamas pirmosios kiekis.
+      .order("created_at", { ascending: true })
+      .limit(1)
       .maybeSingle();
 
     if (existing) {

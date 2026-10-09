@@ -8,10 +8,11 @@ const BATCH_SIZE = 500;
 
 // Ištraukia IAN kodą iš skliaustelių eilutės gale, pvz.
 // "AURS Parkside PARS 7 A1-Service (356413)" -> { ian: "356413", name: "AURS Parkside PARS 7 A1-Service" }
+// Tarpai skliaustelių viduje leidžiami ("( 487358)", "(480994 )").
 function parseCatalogLine(raw) {
   const text = String(raw ?? "").trim();
   if (!text) return { ian: null, name: null, raw: text };
-  const match = text.match(/^(.*)\((\d+)\)\s*$/);
+  const match = text.match(/^(.*)\(\s*(\d+)\s*\)\s*$/);
   if (!match) return { ian: null, name: null, raw: text };
   return { ian: match[2].trim(), name: match[1].trim(), raw: text };
 }
@@ -82,6 +83,24 @@ export default function CatalogImport() {
   const validEntries = useMemo(() => parsed.filter((p) => p.ian), [parsed]);
   const failedCount = parsed.length - validEntries.length;
 
+  // Visi to paties IAN pavadinimai (variantai) — catalog gauna vieną eilutę
+  // IAN'ui, o catalog_variants — kiekvieną skirtingą pavadinimą.
+  const variantsByIan = useMemo(() => {
+    const map = new Map();
+    for (const entry of validEntries) {
+      const name = (entry.name || "").trim();
+      if (!name) continue;
+      if (!map.has(entry.ian)) map.set(entry.ian, new Map());
+      const names = map.get(entry.ian);
+      if (!names.has(name)) names.set(name, { ian: entry.ian, name, raw_text: entry.raw });
+    }
+    return map;
+  }, [validEntries]);
+  const multiVariantCount = useMemo(
+    () => [...variantsByIan.values()].filter((names) => names.size > 1).length,
+    [variantsByIan]
+  );
+
   const previewRows = parsed.slice(0, 10);
 
   async function handleImport() {
@@ -138,6 +157,18 @@ export default function CatalogImport() {
       if (upsertError) {
         errorMessage = upsertError.message;
         break;
+      }
+
+      // Variantai — jau esantys (tas pats IAN + pavadinimas) paliekami.
+      const variants = ians.flatMap((ian) => [...(variantsByIan.get(ian)?.values() || [])]);
+      if (variants.length) {
+        const { error: variantError } = await supabase
+          .from("catalog_variants")
+          .upsert(variants, { onConflict: "ian,name", ignoreDuplicates: true });
+        if (variantError) {
+          errorMessage = `Variantai: ${variantError.message}`;
+          break;
+        }
       }
 
       setProgress({ done: i + 1, total: batches.length });
@@ -265,6 +296,9 @@ export default function CatalogImport() {
             </span>
             <span>
               Nepavyko atpažinti: <strong className="text-signal-red">{failedCount}</strong>
+            </span>
+            <span title="Tas pats IAN su skirtingais pavadinimais — registruojant bus siūloma pasirinkti konkretų daiktą">
+              IAN su keliais variantais: <strong className="text-ink-900">{multiVariantCount}</strong>
             </span>
           </div>
 

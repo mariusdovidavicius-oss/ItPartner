@@ -29,6 +29,24 @@ function formatPalletLabel(pallet) {
 }
 
 // Ta pati regex logika, kuri naudojama src/pages/CatalogImport.jsx —
+// Katalogo variantai su gamintoju/tipu (iš catalog). `refine` papildo
+// užklausą filtru/limitu.
+async function fetchVariants(refine) {
+  const { data } = await refine(
+    supabase
+      .from("catalog_variants")
+      .select("ian, name, catalog(manufacturer, item_type)")
+      .order("ian", { ascending: true })
+      .order("name", { ascending: true })
+  );
+  return (data || []).map((v) => ({
+    ian: v.ian,
+    name: v.name,
+    manufacturer: v.catalog?.manufacturer ?? null,
+    item_type: v.catalog?.item_type ?? null
+  }));
+}
+
 // IAN yra skaičius skliausteliuose teksto gale, likusi dalis yra pavadinimas.
 function parseManualEntry(raw) {
   const text = String(raw ?? "").trim();
@@ -134,9 +152,10 @@ export default function ScanEntry() {
     return () => clearTimeout(handle);
   }, [ian, mode]);
 
-  // IAN pasiūlymai vedant ranka (su debounce) — katalogo įrašai, kurių IAN
-  // prasideda įvestais skaitmenimis. Laukas priima tik skaitmenis, todėl
-  // ilike šablone nėra specialių simbolių.
+  // IAN pasiūlymai vedant ranka (su debounce) — katalogo variantai
+  // (catalog_variants), kurių IAN prasideda įvestais skaitmenimis; IAN su
+  // keliais daiktais rodomas kiekvienu variantu atskirai. Laukas priima tik
+  // skaitmenis, todėl ilike šablone nėra specialių simbolių.
   useEffect(() => {
     const trimmed = ian.trim();
     if (mode !== "ian" || trimmed.length < 2) {
@@ -144,13 +163,7 @@ export default function ScanEntry() {
       return;
     }
     const handle = setTimeout(async () => {
-      const { data } = await supabase
-        .from("catalog")
-        .select("ian, name, manufacturer, item_type")
-        .ilike("ian", `${trimmed}%`)
-        .order("ian", { ascending: true })
-        .limit(10);
-      setIanSuggestions(data || []);
+      setIanSuggestions(await fetchVariants((q) => q.ilike("ian", `${trimmed}%`).limit(15)));
     }, 250);
     return () => clearTimeout(handle);
   }, [ian, mode]);
@@ -382,15 +395,21 @@ export default function ScanEntry() {
 
     const palletLabel = formatPalletLabel(currentPallet);
 
-    // Ieškoti to paties IAN šioje paletėje
-    const { data: existing } = await supabase
+    // Pavadinimas: pasirinktas variantas → ranka įvestas → katalogo (skeneris
+    // dažnai įveda + Enter, kol laukas dar neužpildytas — tada tuščias, o
+    // pavadinimas yra eilutės raktas žemiau, tad imamas katalogo).
+    const nameValue = overrides.nameValue !== undefined ? overrides.nameValue : name;
+    const itemName = (nameValue || "").trim() || catalogRow.name?.trim() || null;
+
+    // Ieškoti to paties daikto (IAN + pavadinimas) šioje paletėje — skirtingi
+    // to paties IAN variantai (catalog_variants) laikomi atskiromis eilutėmis.
+    let existingQuery = supabase
       .from("items")
       .select("id, quantity")
       .eq("ian", trimmedIan)
-      .eq("pallet_id", currentPallet.id)
-      .maybeSingle();
-
-    const nameValue = overrides.nameValue !== undefined ? overrides.nameValue : name;
+      .eq("pallet_id", currentPallet.id);
+    existingQuery = itemName ? existingQuery.eq("name", itemName) : existingQuery.is("name", null);
+    const { data: existing } = await existingQuery.limit(1).maybeSingle();
 
     let feedbackMsg;
     let hasError = false;
@@ -410,7 +429,7 @@ export default function ScanEntry() {
     } else {
       const { error } = await supabase.from("items").insert({
         ian: trimmedIan,
-        name: (nameValue || "").trim() || null,
+        name: itemName,
         category: category.trim() || null,
         notes: notes.trim() || null,
         status: "packed",
@@ -443,6 +462,18 @@ export default function ScanEntry() {
 
   async function handleSubmit(e) {
     e.preventDefault();
+    // IAN su keliais daiktais (variantais) neregistruojamas aklai — skeneris
+    // įveda + Enter greičiau nei pasiūlymų debounce, todėl tikrinama čia.
+    const trimmed = ian.trim();
+    if (trimmed) {
+      const variants = await fetchVariants((q) => q.eq("ian", trimmed));
+      if (variants.length > 1) {
+        setIanSuggestions(variants);
+        setFeedback({ type: "warn", message: `IAN ${trimmed} žymi ${variants.length} skirtingus daiktus — pasirinkite, kurį registruojate.` });
+        inputRef.current?.focus();
+        return;
+      }
+    }
     const success = await registerItem(ian);
     if (success) {
       setIan("");
@@ -525,6 +556,13 @@ export default function ScanEntry() {
       return;
     }
 
+    // Naujas pavadinimas tampa dar vienu šio IAN variantu (esami lieka).
+    if (parsed.name) {
+      await supabase
+        .from("catalog_variants")
+        .upsert({ ian: parsed.ian, name: parsed.name, raw_text: manualText.trim() }, { onConflict: "ian,name", ignoreDuplicates: true });
+    }
+
     const success = await registerItem(parsed.ian, { nameValue: parsed.name });
     if (success) {
       setManualText("");
@@ -533,9 +571,13 @@ export default function ScanEntry() {
   }
 
   // Pasiūlymų sąrašas nerodomas, kai vienintelis pasiūlymas — jau pilnai
-  // įvestas IAN; kol jis rodomas, "nerasta"/"paskirtis" įspėjimai slepiami
+  // įvestas IAN su vienu daiktu; rodomas, kai įvestas IAN turi kelis
+  // variantus. Kol jis rodomas, "nerasta"/"paskirtis" įspėjimai slepiami
   // (dalinis IAN natūraliai dar nerastas).
-  const showIanSuggestions = ian.trim() !== "" && ianSuggestions.some((r) => r.ian !== ian.trim());
+  const typedIan = ian.trim();
+  const exactVariantCount = ianSuggestions.filter((r) => r.ian === typedIan).length;
+  const showIanSuggestions =
+    typedIan !== "" && (exactVariantCount > 1 || ianSuggestions.some((r) => r.ian !== typedIan));
 
   return (
     <div className="space-y-5">
@@ -620,11 +662,17 @@ export default function ScanEntry() {
               </span>
             </div>
 
+            {showIanSuggestions && exactVariantCount > 1 && (
+              <p className="mt-2 flex items-center gap-1.5 text-xs text-signal-amber">
+                <AlertTriangle size={13} />
+                IAN {typedIan} žymi {exactVariantCount} skirtingus daiktus — pasirinkite, kurį registruojate.
+              </p>
+            )}
             {showIanSuggestions && (
               <div className="mt-2 max-h-72 divide-y divide-white/5 overflow-y-auto rounded-xl border border-white/10 bg-ink-900">
                 {ianSuggestions.map((r) => (
                   <button
-                    key={r.ian}
+                    key={`${r.ian}|${r.name}`}
                     type="button"
                     disabled={saving}
                     onClick={() => handleSelectIanSuggestion(r)}
