@@ -83,6 +83,8 @@ export default function Parts() {
   const [debouncedSearch, setDebouncedSearch] = useState(() => searchParams.get("q") || "");
   const [quantityDrafts, setQuantityDrafts] = useState({}); // part_stock id -> juodraštis
   const [savingStockId, setSavingStockId] = useState(null);
+  const [totalDrafts, setTotalDrafts] = useState({}); // part id -> bendro kiekio juodraštis (kai kelios vietos)
+  const [savingTotalId, setSavingTotalId] = useState(null);
   const [pageSize, setPageSize] = useState(PAGE_SIZE_OPTIONS[0]);
   const [page, setPage] = useState(0);
   const [expandedIds, setExpandedIds] = useState(new Set());
@@ -124,12 +126,15 @@ export default function Parts() {
     });
 
     // Lokacijos filtras rodo tik "dėžės" numerį (pvz. "8"), bet po ta dėže
-    // gali būti mažos dėžutės ("8 (-1-)", "8 (-2-)") — atitinka tikslią dėžę
-    // arba "dėžė + tarpas + …" (NE prefiksą, kad "8" neatitiktų "80").
-    // locations_text = "|8 (-1-)|42|" — visos priedo vietos.
+    // gali būti mažos dėžutės ("8 (-1-)", "8(-2-)") — atitinka tikslią dėžę
+    // arba "dėžė + tarpas/skliaustas + …" (NE prefiksą, kad "8" neatitiktų "80").
+    // locations_text = "|8 (-1-)|42|" — visos priedo vietos. Reikšmė su "("
+    // PostgREST or() filtre turi būti kabutėse.
     if (locationFilter !== "") {
-      const esc = locationFilter.replace(/[%,()|*]/g, "");
-      query = query.or(`locations_text.ilike.%|${esc}|%,locations_text.ilike.%|${esc} %`);
+      const esc = locationFilter.replace(/[%,()|*"]/g, "");
+      query = query.or(
+        `locations_text.ilike.%|${esc}|%,locations_text.ilike.%|${esc} %,locations_text.ilike."%|${esc}(%"`
+      );
     }
     if (stockFilter === "out") query = query.eq("stock_level", "out");
     if (stockFilter === "low") query = query.eq("stock_level", "low");
@@ -190,11 +195,11 @@ export default function Parts() {
 
   async function loadLocationOptions() {
     const rows = await fetchAllRows(() => supabase.from("part_stock").select("location").order("id")).catch(() => []);
-    // Filtras grupuoja pagal dėžės numerį — "8 (-1-)" ir "8 (-2-)" į vieną
-    // pasirinkimą "8" (pirmas žodis prieš tarpą). Raidžių dydis nesvarbus.
+    // Filtras grupuoja pagal dėžės numerį — "8 (-1-)" ir "8(-2-)" į vieną
+    // pasirinkimą "8" (viskas iki tarpo arba "("). Raidžių dydis nesvarbus.
     const map = new Map();
     rows.forEach((r) => {
-      const box = String(r.location || "").trim().split(/\s+/)[0];
+      const box = (String(r.location || "").trim().match(/^[^\s(]+/) || [""])[0];
       if (box && !map.has(box.toLowerCase())) map.set(box.toLowerCase(), box);
     });
     setLocationOptions([...map.values()].sort((a, b) => a.localeCompare(b, undefined, { numeric: true })));
@@ -349,6 +354,52 @@ export default function Parts() {
     return saveStockQuantity(stock, Math.max(0, base + delta));
   }
 
+  // Bendras kiekis (kai priedas keliose vietose) — atskaitos taškas yra
+  // kiekvienos vietos dabartinė (draft) reikšmė, kaip ir handleStep.
+  function draftQuantity(stock) {
+    return Math.max(0, Math.round(Number(quantityDrafts[stock.id] ?? stock.quantity)) || 0);
+  }
+
+  function draftTotal(part) {
+    return (part.part_stock || []).reduce((sum, s) => sum + draftQuantity(s), 0);
+  }
+
+  // Bendro kiekio pakeitimas paskirstomas po vietas: pridedama prie pirmos
+  // vietos, atimama iš vietų sąrašo tvarka, kol jose yra likutis.
+  async function changeTotal(part, delta) {
+    const stock = part.part_stock || [];
+    if (!delta || !stock.length || savingTotalId === part.id) return;
+    setSavingTotalId(part.id);
+    let ok = true;
+    if (delta > 0) {
+      ok = await saveStockQuantity(stock[0], draftQuantity(stock[0]) + delta);
+    } else {
+      let remaining = -delta;
+      for (const s of stock) {
+        if (remaining <= 0) break;
+        const current = draftQuantity(s);
+        if (current <= 0) continue;
+        const take = Math.min(current, remaining);
+        ok = await saveStockQuantity(s, current - take);
+        if (!ok) break;
+        remaining -= take;
+      }
+    }
+    setSavingTotalId(null);
+    if (ok) {
+      setTotalDrafts((prev) => {
+        const next = { ...prev };
+        delete next[part.id];
+        return next;
+      });
+    }
+  }
+
+  function handleSaveTotal(part) {
+    const value = Math.max(0, Math.round(Number(totalDrafts[part.id] ?? "")) || 0);
+    return changeTotal(part, value - draftTotal(part));
+  }
+
   async function handleSavePartField(part, patch, label) {
     const { error } = await supabase.from("parts").update(patch).eq("id", part.id);
     if (error) {
@@ -478,6 +529,19 @@ export default function Parts() {
     onStep: (delta) => handleStep(stock, delta),
     onSave: () => handleSaveQuantity(stock)
   });
+
+  // Tas pats QuantityEditor, bet bendram kiekiui per visas vietas.
+  const totalEditorProps = (part) => {
+    const total = draftTotal(part);
+    return {
+      stock: { quantity: total },
+      draft: totalDrafts[part.id] ?? String(total),
+      saving: savingTotalId === part.id,
+      onDraft: (value) => setTotalDrafts((prev) => ({ ...prev, [part.id]: value })),
+      onStep: (delta) => changeTotal(part, delta),
+      onSave: () => handleSaveTotal(part)
+    };
+  };
 
   return (
     <div className="space-y-5">
@@ -652,8 +716,10 @@ export default function Parts() {
                   const level = stockLevel(p);
                   const rowTone = stockLevelRowTone(level);
                   const locationsTitle = stock.map(placeLabel).join("\n");
-                  const locationSummary =
-                    stock.length === 0 ? "—" : stock.length === 1 ? stock[0].location : `${stock[0].location} +${stock.length - 1}`;
+                  // Rodoma viena vieta — ta, kurioje daugiausia vienetų (lygiomis —
+                  // pirmoji sąraše); visos vietos matomos užvedus pelę ir išskleidus.
+                  const mainStock = stock.reduce((best, s) => ((s.quantity ?? 0) > (best.quantity ?? 0) ? s : best), stock[0]);
+                  const locationSummary = mainStock ? mainStock.location : "—";
                   return (
                     <Fragment key={p.id}>
                       <tr className={expanded ? "bg-ink-900/[0.015]" : rowTone}>
@@ -690,10 +756,12 @@ export default function Parts() {
                           {locationSummary}
                         </td>
                         <td className="sticky right-0 z-10 bg-white px-3 py-2.5">
-                          {/* Viena vieta — greitas +/− tiesiai eilutėje; kelios — bendras
-                              kiekis, o kiekvienos vietos kiekis keičiamas išskleidus. */}
+                          {/* Viena vieta — tos vietos kiekis; kelios — bendras kiekis
+                              (žr. changeTotal), o kiekvienos vietos — išskleidus. */}
                           {canEdit && stock.length === 1 ? (
                             <QuantityEditor {...quantityEditorProps(stock[0])} />
+                          ) : canEdit && stock.length > 1 ? (
+                            <QuantityEditor {...totalEditorProps(p)} />
                           ) : (
                             <span className="whitespace-nowrap font-semibold text-ink-800">
                               {totalQuantity(p)}
