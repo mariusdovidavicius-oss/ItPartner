@@ -65,6 +65,7 @@ export default function ScanEntry() {
   // pavadinimą, kai fizinė etiketė neįskaitoma / nėra) arba "manual"
   // (naujo, kataloge dar neregistruoto įrankio įvedimas rankiniu būdu).
   const [mode, setMode] = useState("ian");
+  const [ianSuggestions, setIanSuggestions] = useState([]);
   const [nameQuery, setNameQuery] = useState("");
   const [nameResults, setNameResults] = useState([]);
   const [searchingName, setSearchingName] = useState(false);
@@ -130,6 +131,27 @@ export default function ScanEntry() {
       }
       setPreviewUnclassified(computeDestination(data?.manufacturer, data?.item_type) === UNCLASSIFIED);
     }, 400);
+    return () => clearTimeout(handle);
+  }, [ian, mode]);
+
+  // IAN pasiūlymai vedant ranka (su debounce) — katalogo įrašai, kurių IAN
+  // prasideda įvestais skaitmenimis. Laukas priima tik skaitmenis, todėl
+  // ilike šablone nėra specialių simbolių.
+  useEffect(() => {
+    const trimmed = ian.trim();
+    if (mode !== "ian" || trimmed.length < 2) {
+      setIanSuggestions([]);
+      return;
+    }
+    const handle = setTimeout(async () => {
+      const { data } = await supabase
+        .from("catalog")
+        .select("ian, name, manufacturer, item_type")
+        .ilike("ian", `${trimmed}%`)
+        .order("ian", { ascending: true })
+        .limit(10);
+      setIanSuggestions(data || []);
+    }, 250);
     return () => clearTimeout(handle);
   }, [ian, mode]);
 
@@ -431,6 +453,21 @@ export default function ScanEntry() {
     inputRef.current?.focus();
   }
 
+  // Pasirinkus IAN pasiūlymą — registruojama iškart, kaip ir paieškoje pagal
+  // pavadinimą; laukai išvalomi kaip po įprasto registravimo.
+  async function handleSelectIanSuggestion(result) {
+    if (saving) return;
+    const success = await registerItem(result.ian, { nameValue: result.name });
+    if (success) {
+      setIan("");
+      setName("");
+      setCategory("");
+      setNotes("");
+      setIanSuggestions([]);
+    }
+    inputRef.current?.focus();
+  }
+
   // Pasirinkus rezultatą paieškoje pagal pavadinimą — elgiamasi lygiai taip
   // pat, kaip būtų nuskenuotas to įrašo IAN kodas. Po sėkmės išvalomas tik
   // paieškos laukas/rezultatai — režimas paliekamas "name", kad darbuotojas
@@ -494,6 +531,11 @@ export default function ScanEntry() {
     }
     manualInputRef.current?.focus();
   }
+
+  // Pasiūlymų sąrašas nerodomas, kai vienintelis pasiūlymas — jau pilnai
+  // įvestas IAN; kol jis rodomas, "nerasta"/"paskirtis" įspėjimai slepiami
+  // (dalinis IAN natūraliai dar nerastas).
+  const showIanSuggestions = ian.trim() !== "" && ianSuggestions.some((r) => r.ian !== ian.trim());
 
   return (
     <div className="space-y-5">
@@ -578,7 +620,26 @@ export default function ScanEntry() {
               </span>
             </div>
 
-            {previewUnclassified && ian.trim() && (
+            {showIanSuggestions && (
+              <div className="mt-2 max-h-72 divide-y divide-white/5 overflow-y-auto rounded-xl border border-white/10 bg-ink-900">
+                {ianSuggestions.map((r) => (
+                  <button
+                    key={r.ian}
+                    type="button"
+                    disabled={saving}
+                    onClick={() => handleSelectIanSuggestion(r)}
+                    className="block w-full px-4 py-3 text-left text-sm text-white hover:bg-white/5 disabled:opacity-50"
+                  >
+                    <span className="font-mono font-medium">{r.ian}</span>
+                    <span className="text-white/50">
+                      {" "}— {r.name || "?"} — {r.manufacturer || "?"} — {r.item_type || "?"}
+                    </span>
+                  </button>
+                ))}
+              </div>
+            )}
+
+            {previewUnclassified && ian.trim() && !showIanSuggestions && (
               <p className="mt-2 flex items-center gap-1.5 text-xs text-signal-amber">
                 <AlertTriangle size={13} />
                 Paskirtis nenustatyta — prietaisas bus priskirtas „Nepriskirta“ paletei
@@ -694,7 +755,7 @@ export default function ScanEntry() {
                 placeholder="Pavadinimas (nebūtina)"
                 className="input-field bg-white/[0.06] border-white/10 text-white placeholder:text-white/30"
               />
-              {catalogNotFound && (
+              {catalogNotFound && !showIanSuggestions && (
                 <p className="mt-1.5 text-xs text-signal-red">
                   Nerasta kataloge — registruoti negalima. Naudokite skirtuką „Naujas įrankis“.
                 </p>
