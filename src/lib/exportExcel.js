@@ -100,7 +100,7 @@ export async function exportPartsToExcel(partsList, filename) {
   const workbook = new ExcelJS.Workbook();
   const sheet = workbook.addWorksheet("Priedai");
   sheet.columns = [
-    { width: 10 }, { width: 22 }, { width: 28 }, { width: 16 },
+    { width: 18 }, { width: 10 }, { width: 22 }, { width: 28 }, { width: 16 },
     { width: 10 }, { width: 12 }, { width: 40 }
   ];
 
@@ -108,7 +108,7 @@ export async function exportPartsToExcel(partsList, filename) {
   const fullBorder = { top: thin, left: thin, bottom: thin, right: thin };
 
   const headerRow = sheet.addRow([
-    "Lokacija", "Pagrindinis modelis", "Pavadinimas", "Detalės kodas",
+    "Sandėlis", "Lokacija", "Pagrindinis modelis", "Pavadinimas", "Detalės kodas",
     "Kiekis", "El. p-vė", "Suderinami modeliai"
   ]);
   headerRow.eachCell({ includeEmpty: true }, (cell) => {
@@ -116,11 +116,14 @@ export async function exportPartsToExcel(partsList, filename) {
     cell.border = fullBorder;
   });
 
+  // Pirma pagal sandėlį, tada pagal lokaciją ("numeric" — "8" prieš "42").
   const sorted = [...partsList].sort((a, b) =>
+    String(a.warehouses?.name || "").localeCompare(String(b.warehouses?.name || "")) ||
     String(a.location || "").localeCompare(String(b.location || ""), undefined, { numeric: true })
   );
   sorted.forEach((p) => {
     const row = sheet.addRow([
+      p.warehouses?.name || "",
       p.location ?? "",
       p.main_model || "",
       p.name || "",
@@ -160,13 +163,13 @@ export async function exportDevicesToExcel(devicesList, filename) {
   const workbook = new ExcelJS.Workbook();
   const sheet = workbook.addWorksheet("Prietaisai");
   sheet.columns = [
-    { width: 40 }, { width: 16 }, { width: 10 }, { width: 14 }, { width: 30 }, { width: 14 }
+    { width: 40 }, { width: 16 }, { width: 10 }, { width: 20 }, { width: 14 }, { width: 30 }, { width: 14 }
   ];
 
   const thin = { style: "thin" };
   const fullBorder = { top: thin, left: thin, bottom: thin, right: thin };
 
-  const headerRow = sheet.addRow(["Prietaisas", "IAN", "Kiekis", "Lokacija", "Komentaras", "Gamintojas"]);
+  const headerRow = sheet.addRow(["Prietaisas", "IAN", "Kiekis", "Sandėlis", "Lokacija", "Komentaras", "Gamintojas"]);
   headerRow.eachCell({ includeEmpty: true }, (cell) => {
     cell.font = { bold: true };
     cell.border = fullBorder;
@@ -179,6 +182,7 @@ export async function exportDevicesToExcel(devicesList, filename) {
         d.name || "",
         d.ian || "",
         s?.quantity ?? 0,
+        s?.warehouses?.name || "",
         s?.location || "",
         d.notes || "",
         d.manufacturer || ""
@@ -213,7 +217,7 @@ export async function exportPartsWriteoffsToExcel(writeoffsList, filename) {
   const workbook = new ExcelJS.Workbook();
   const sheet = workbook.addWorksheet("Nurašymai");
   sheet.columns = [
-    { width: 14 }, { width: 28 }, { width: 26 }, { width: 16 }, { width: 8 },
+    { width: 14 }, { width: 28 }, { width: 26 }, { width: 16 }, { width: 18 }, { width: 12 }, { width: 8 },
     { width: 18 }, { width: 24 }, { width: 16 }, { width: 12 }
   ];
 
@@ -221,7 +225,7 @@ export async function exportPartsWriteoffsToExcel(writeoffsList, filename) {
   const fullBorder = { top: thin, left: thin, bottom: thin, right: thin };
 
   const headerRow = sheet.addRow([
-    "Data", "Priedas", "Modelis", "Detalės kodas", "Kiekis", "Priežastis", "Kaina / RMA / Priežastis", "Kas", "Būsena"
+    "Data", "Priedas", "Modelis", "Detalės kodas", "Sandėlis", "Lokacija", "Kiekis", "Priežastis", "Kaina / RMA / Priežastis", "Kas", "Būsena"
   ]);
   headerRow.eachCell({ includeEmpty: true }, (cell) => {
     cell.font = { bold: true };
@@ -238,6 +242,8 @@ export async function exportPartsWriteoffsToExcel(writeoffsList, filename) {
       w.parts?.name || "",
       w.parts?.main_model || "",
       w.parts?.part_code || "",
+      w.warehouses?.name || "",
+      w.location || "",
       w.quantity ?? 0,
       WRITEOFF_REASON_LABELS[w.reason_type] || w.reason_type,
       detail,
@@ -267,12 +273,14 @@ export async function exportPartsWriteoffsToExcel(writeoffsList, filename) {
 
 // Prietaisų nurašymų (device_writeoffs) sąrašo eksportas — naudojama
 // /prietaisai/nurasymai puslapyje. Skirtingai nuo priedų nurašymų, čia yra
-// papildomas "Lokacija" stulpelis, nes prietaiso kiekis yra per lokaciją.
+// papildomi "Sandėlis"/"Lokacija" stulpeliai, nes prietaiso kiekis yra per
+// sandėlį+lokaciją (žr. migrate_add_device_warehouses.sql). "Sandėlis" gali
+// būti tuščias senuose įrašuose, pažymėtuose prieš pridedant sandėlius.
 export async function exportDeviceWriteoffsToExcel(writeoffsList, filename) {
   const workbook = new ExcelJS.Workbook();
   const sheet = workbook.addWorksheet("Nurašymai");
   sheet.columns = [
-    { width: 14 }, { width: 28 }, { width: 16 }, { width: 14 }, { width: 8 },
+    { width: 14 }, { width: 28 }, { width: 16 }, { width: 20 }, { width: 14 }, { width: 8 },
     { width: 18 }, { width: 24 }, { width: 16 }, { width: 12 }
   ];
 
@@ -280,7 +288,7 @@ export async function exportDeviceWriteoffsToExcel(writeoffsList, filename) {
   const fullBorder = { top: thin, left: thin, bottom: thin, right: thin };
 
   const headerRow = sheet.addRow([
-    "Data", "Prietaisas", "IAN", "Lokacija", "Kiekis", "Priežastis", "Detalė", "Kas", "Būsena"
+    "Data", "Prietaisas", "IAN", "Sandėlis", "Lokacija", "Kiekis", "Priežastis", "Detalė", "Kas", "Būsena"
   ]);
   headerRow.eachCell({ includeEmpty: true }, (cell) => {
     cell.font = { bold: true };
@@ -296,6 +304,7 @@ export async function exportDeviceWriteoffsToExcel(writeoffsList, filename) {
       formatDate(w.created_at),
       w.device_name || "",
       w.device_ian || "",
+      w.warehouses?.name || "",
       w.location || "",
       w.quantity ?? 0,
       WRITEOFF_REASON_LABELS[w.reason_type] || w.reason_type,

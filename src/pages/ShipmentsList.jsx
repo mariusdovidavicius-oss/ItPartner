@@ -4,7 +4,7 @@ import { ArrowLeft, Loader2, FileSpreadsheet, Eye, Boxes, AlertCircle, Search } 
 import { supabase } from "../lib/supabaseClient";
 import { prettifyDestination, UNCLASSIFIED } from "../lib/destination";
 import DestinationBadge from "../components/DestinationBadge";
-import { escapeLike, formatDate } from "../lib/format";
+import { searchPattern, formatDate } from "../lib/format";
 
 // Stulpeliai su įdėtais pallets/shipments duomenimis — "!inner" užtikrina, kad
 // grąžinami tik prietaisai, kurie priklauso jau IŠVEŽTAI paletei (t. y. turi
@@ -95,14 +95,10 @@ export default function ShipmentsList() {
     }
     setSearching(true);
     const handle = setTimeout(async () => {
-      const q = escapeLike(trimmed);
-      const [byIan, byName] = await Promise.all([
-        supabase.from("items").select(SEARCH_SELECT).ilike("ian", `%${q}%`).limit(30),
-        supabase.from("items").select(SEARCH_SELECT).ilike("name", `%${q}%`).limit(30)
-      ]);
-      const merged = new Map();
-      [...(byIan.data || []), ...(byName.data || [])].forEach((item) => merged.set(item.id, item));
-      setSearchResults(Array.from(merged.values()));
+      // search_text = IAN + pavadinimas (žr. migrate_search_lt_fold.sql), tad
+      // viena užklausa pakeičia buvusias dvi atskiras (pagal IAN ir pagal pavadinimą).
+      const { data } = await supabase.from("items").select(SEARCH_SELECT).ilike("search_text", searchPattern(trimmed)).limit(60);
+      setSearchResults(data || []);
       setSearching(false);
     }, 350);
     return () => clearTimeout(handle);

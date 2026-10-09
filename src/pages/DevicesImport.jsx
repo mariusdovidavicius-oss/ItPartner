@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { Link } from "react-router-dom";
 import { Upload, FileSpreadsheet, CheckCircle2, AlertCircle, Loader2 } from "lucide-react";
 import { supabase } from "../lib/supabaseClient";
 import { normalizeHeader, columnLabel } from "../lib/excelHeaders";
@@ -9,11 +10,14 @@ const BATCH_SIZE = 500;
 // Tikslinis devices/device_stock stulpelis -> antraščių tekstai (normalizuoti),
 // pagal kuriuos bandoma automatiškai atspėti atitinkamą Excel stulpelį.
 // Atitinka Excel šaltinį: A Prietaisas | B IAN | C Kiekis | D Lokacija |
-// E Komentaras | F Gamintojas.
+// E Komentaras | F Gamintojas. "warehouse" (Sandėlis) — NĖRA originaliame
+// Excel šaltinyje, tad automatinis atspėjimas jam nesvarbus; PRIVALOMAS
+// laukas (žr. import_devices RPC — be jo eilutė praleidžiama).
 const FIELDS = [
   { key: "name", label: "Prietaisas", match: ["prietaisas"] },
   { key: "ian", label: "IAN", match: ["ian"] },
   { key: "quantity", label: "Kiekis", match: ["kiekis"] },
+  { key: "warehouse", label: "Sandėlis", match: ["sandelis", "sandėlis", "warehouse"] },
   { key: "location", label: "Lokacija", match: ["lokacija"] },
   { key: "notes", label: "Komentaras", match: ["komentaras"] },
   { key: "manufacturer", label: "Gamintojas", match: ["gamintojas"] }
@@ -26,12 +30,14 @@ function toRecord(row, columnMap) {
     return idx === "" || idx === undefined ? "" : row[Number(idx)];
   }
   const ian = String(cell("ian") ?? "").trim();
+  const warehouse = String(cell("warehouse") ?? "").trim();
   const quantityRaw = String(cell("quantity") ?? "").trim();
   const quantity = quantityRaw ? Number(quantityRaw) : 0;
 
   return {
     name: String(cell("name") ?? "").trim() || null,
     ian,
+    warehouse,
     quantity: Number.isFinite(quantity) ? quantity : 0,
     location: String(cell("location") ?? "").trim() || null,
     notes: String(cell("notes") ?? "").trim() || null,
@@ -51,9 +57,32 @@ export default function DevicesImport() {
   const [result, setResult] = useState(null);
   const [existingCount, setExistingCount] = useState(null);
   const [clearExisting, setClearExisting] = useState(false);
+  // Sandėlis PRIVALO jau egzistuoti (sukurtas adminas /sandeliai puslapyje) —
+  // importas jo savaime nekuria (žr. import_devices RPC). Sąrašas čia — TIK
+  // kliento pusės peržiūrai (kad iš karto matytųsi neatpažinti pavadinimai,
+  // nelaukiant importo rezultato); galutinė atrankos tiesa lieka serveryje.
+  // null = dar nepatvirtinta (kraunama arba nepavyko įkelti) — TADA
+  // validEntries/Importuoti laikomi TUŠČIAIS (žr. žemiau), o ne leidžiami,
+  // kad laikina užklausos klaida ar lenktynės su failo įkėlimu nepraleistų
+  // realiai neegzistuojančio sandėlio pavadinimo per kliento pusės patikrą.
+  const [warehouseNames, setWarehouseNames] = useState(null);
+  const [warehouseLoadError, setWarehouseLoadError] = useState(false);
+
+  async function loadWarehouseNames() {
+    setWarehouseLoadError(false);
+    const { data, error } = await supabase.from("warehouses").select("name").order("name");
+    if (error) {
+      setWarehouseLoadError(true);
+      return;
+    }
+    // Mažosiomis raidėmis — sandėlis atpažįstamas neatsižvelgiant į raidžių
+    // dydį ("grizzly" = "Grizzly"), kaip ir import_devices() serverio pusėje.
+    setWarehouseNames(new Set((data || []).map((w) => w.name.trim().toLowerCase())));
+  }
 
   useEffect(() => {
     refreshExistingCount();
+    loadWarehouseNames();
   }, []);
 
   async function refreshExistingCount() {
@@ -102,10 +131,17 @@ export default function DevicesImport() {
       .map((row) => toRecord(row, columnMap));
   }, [dataRows, columnMap]);
 
-  // Eilutės be IAN serverio pusėje (import_devices RPC) praleidžiamos, nes
-  // neįmanoma identifikuoti modelio — ta pati taisyklė taikoma ir čia
+  // Eilutės be IAN arba be JAU EGZISTUOJANČIO sandėlio serverio pusėje
+  // (import_devices RPC) praleidžiamos — ta pati taisyklė taikoma ir čia
   // peržiūrai/skaičiams, kad rodomas skaičius atitiktų realų importo rezultatą.
-  const validEntries = useMemo(() => parsed.filter((p) => p.ian), [parsed]);
+  // Kol warehouseNames dar nepatvirtintas (null — kraunama arba nepavyko
+  // įkelti), NĖ VIENA eilutė nelaikoma tinkama — priešingu atveju, kol
+  // užklausa dar vykdoma (ar jei ji nepavyktų), bet koks netuščias sandėlio
+  // tekstas atrodytų "tinkamas", nors serveris jį gali praleisti.
+  const validEntries = useMemo(
+    () => (warehouseNames ? parsed.filter((p) => p.ian && p.warehouse && warehouseNames.has(p.warehouse.toLowerCase())) : []),
+    [parsed, warehouseNames]
+  );
   const failedCount = parsed.length - validEntries.length;
 
   const previewRows = parsed.slice(0, 10);
@@ -153,13 +189,30 @@ export default function DevicesImport() {
       <div>
         <h1 className="text-xl font-bold text-ink-900 lg:text-2xl">Prietaisų sandėlio importas</h1>
         <p className="mt-1 text-sm text-ink-600/70">
-          Įkelkite Excel (.xlsx) su prietaisų sąrašu (Prietaisas, IAN, Kiekis, Lokacija, Komentaras,
-          Gamintojas). Tas pats IAN gali kartotis keliose eilutėse (skirtingos lokacijos) — pakartotinis
-          importas atnaujina esamą lokacijos kiekį, ne dubliuoja.
+          Įkelkite Excel (.xlsx) su prietaisų sąrašu (Prietaisas, IAN, Kiekis, Sandėlis, Lokacija, Komentaras,
+          Gamintojas). Tas pats IAN gali kartotis keliose eilutėse (skirtingos sandėlio/lokacijos) —
+          pakartotinis importas atnaujina esamą kiekį, ne dubliuoja. Sandėlis eilutėje turi sutapti su jau
+          sukurto sandėlio pavadinimu — importas naujų sandėlių savaime nekuria.
         </p>
         {existingCount !== null && (
           <p className="mt-2 text-xs text-ink-600/60">
             Lentelėje šiuo metu: <strong className="text-ink-900">{existingCount}</strong> prietaiso(-ų) modelis(-iai).
+          </p>
+        )}
+        {warehouseNames && warehouseNames.size === 0 && (
+          <p className="mt-2 flex items-center gap-1.5 text-sm font-medium text-signal-red">
+            <AlertCircle size={14} className="shrink-0" />
+            Dar nesukurta nė vieno sandėlio — pirma sukurkite bent vieną{" "}
+            <Link to="/sandeliai" className="underline decoration-dotted hover:text-signal-red/80">/sandeliai</Link> puslapyje.
+          </p>
+        )}
+        {warehouseLoadError && (
+          <p className="mt-2 flex items-center gap-1.5 text-sm font-medium text-signal-red">
+            <AlertCircle size={14} className="shrink-0" />
+            Nepavyko įkelti sandėlių sąrašo — kol nepatvirtinta, nė viena eilutė nelaikoma tinkama importui.{" "}
+            <button type="button" onClick={loadWarehouseNames} className="underline decoration-dotted hover:text-signal-red/80">
+              Bandyti dar kartą
+            </button>
           </p>
         )}
       </div>
@@ -216,16 +269,24 @@ export default function DevicesImport() {
             ))}
           </div>
 
-          <div className="flex flex-wrap gap-4 text-sm text-ink-600/70">
+          <div className="flex flex-wrap items-center gap-4 text-sm text-ink-600/70">
             <span>
               Iš viso eilučių: <strong className="text-ink-900">{parsed.length}</strong>
             </span>
-            <span>
-              Tinkamų (yra IAN): <strong className="text-signal-teal">{validEntries.length}</strong>
-            </span>
-            <span>
-              Praleista: <strong className="text-signal-red">{failedCount}</strong>
-            </span>
+            {warehouseNames ? (
+              <>
+                <span>
+                  Tinkamų (yra IAN ir sandėlis): <strong className="text-signal-teal">{validEntries.length}</strong>
+                </span>
+                <span>
+                  Praleista: <strong className="text-signal-red">{failedCount}</strong>
+                </span>
+              </>
+            ) : (
+              <span className="flex items-center gap-1.5">
+                <Loader2 size={13} className="animate-spin" /> Tikrinama, kurie sandėliai egzistuoja…
+              </span>
+            )}
           </div>
 
           {previewRows.length > 0 && (
@@ -237,22 +298,34 @@ export default function DevicesImport() {
                       <th className="px-4 py-2.5 font-semibold">Prietaisas</th>
                       <th className="px-4 py-2.5 font-semibold">IAN</th>
                       <th className="px-4 py-2.5 font-semibold">Kiekis</th>
+                      <th className="px-4 py-2.5 font-semibold">Sandėlis</th>
                       <th className="px-4 py-2.5 font-semibold">Lokacija</th>
                       <th className="px-4 py-2.5 font-semibold">Komentaras</th>
                       <th className="px-4 py-2.5 font-semibold">Gamintojas</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-ink-900/5">
-                    {previewRows.map((row, i) => (
-                      <tr key={i} className={!row.ian ? "bg-signal-red/5" : undefined}>
-                        <td className="px-4 py-2.5 text-ink-800">{row.name || "—"}</td>
-                        <td className="px-4 py-2.5 font-mono font-medium text-ink-900">{row.ian || "—"}</td>
-                        <td className="px-4 py-2.5 text-ink-800">{row.quantity}</td>
-                        <td className="px-4 py-2.5 text-ink-800">{row.location || "—"}</td>
-                        <td className="px-4 py-2.5 text-ink-800">{row.notes || "—"}</td>
-                        <td className="px-4 py-2.5 text-ink-800">{row.manufacturer || "—"}</td>
-                      </tr>
-                    ))}
+                    {previewRows.map((row, i) => {
+                      // Kol warehouseNames dar nepatvirtintas, sandėlio langelis rodomas kaip
+                      // "tikrinama" (neutralu), ne kaip patvirtintai klaidingas (raudona) — red
+                      // reiškia serverio jau ĮRODYTĄ neatpažintą pavadinimą, ne dar nežinomą.
+                      const warehousePending = row.warehouse && !warehouseNames;
+                      const warehouseOk = row.warehouse && warehouseNames?.has(row.warehouse.toLowerCase());
+                      const rowInvalid = !row.ian || (!warehousePending && !warehouseOk);
+                      return (
+                        <tr key={i} className={rowInvalid ? "bg-signal-red/5" : undefined}>
+                          <td className="px-4 py-2.5 text-ink-800">{row.name || "—"}</td>
+                          <td className="px-4 py-2.5 font-mono font-medium text-ink-900">{row.ian || "—"}</td>
+                          <td className="px-4 py-2.5 text-ink-800">{row.quantity}</td>
+                          <td className={`px-4 py-2.5 ${warehousePending ? "text-ink-600/50" : warehouseOk ? "text-ink-800" : "font-medium text-signal-red"}`}>
+                            {row.warehouse || "— nenurodyta"}{warehousePending ? " (tikrinama…)" : ""}
+                          </td>
+                          <td className="px-4 py-2.5 text-ink-800">{row.location || "—"}</td>
+                          <td className="px-4 py-2.5 text-ink-800">{row.notes || "—"}</td>
+                          <td className="px-4 py-2.5 text-ink-800">{row.manufacturer || "—"}</td>
+                        </tr>
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>
@@ -276,7 +349,7 @@ export default function DevicesImport() {
             <button
               type="button"
               onClick={handleImport}
-              disabled={importing || !validEntries.length}
+              disabled={importing || !warehouseNames || !validEntries.length}
               className="btn-primary"
             >
               {importing ? <Loader2 size={16} className="animate-spin" /> : <FileSpreadsheet size={16} />}

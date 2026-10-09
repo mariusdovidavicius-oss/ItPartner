@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { Search, Loader2, ChevronLeft, ChevronRight, PackageMinus, Download, AlertCircle, X } from "lucide-react";
 import { supabase } from "../lib/supabaseClient";
-import { escapeLike, formatDate } from "../lib/format";
+import { searchPattern, formatDate } from "../lib/format";
 import { DEVICE_WRITEOFF_REASONS, reasonLabelMap, summarizeWriteoffs, writeoffDetail } from "../lib/writeoffReasons";
 import { periodKey, periodRange, periodStateFromParams } from "../lib/period";
 import { fetchAllRows } from "../lib/fetchAll";
@@ -12,6 +12,14 @@ import PeriodFilter from "../components/PeriodFilter";
 const PAGE_SIZE_OPTIONS = [10, 25, 50, 100];
 const REASON_LABELS = reasonLabelMap(DEVICE_WRITEOFF_REASONS);
 const SEARCH_DEBOUNCE_MS = 300;
+
+// "Sandėlis — Lokacija" (arba vien lokacija, jei sandėlis nežinomas — senas
+// įrašas prieš pridedant sandėlius). Ta pati lokacija dabar gali kartotis
+// skirtinguose sandėliuose, tad be šito istorija taptų nebeaiški.
+function writeoffWhere(w) {
+  if (!w.location) return "—";
+  return w.warehouses?.name ? `${w.warehouses.name} — ${w.location}` : w.location;
+}
 
 export default function DeviceWriteoffs() {
   // Pradiniai priežasties ir laikotarpio filtrai gali ateiti iš URL (žr.
@@ -52,14 +60,13 @@ export default function DeviceWriteoffs() {
   function buildQuery(opts = {}) {
     let query = supabase.from("device_writeoffs").select(
       opts.select ??
-        "id, location, quantity, reason_type, price, rma, reason, created_at, undone_at, device_name, device_ian, profiles!user_id(username)",
+        "id, location, quantity, reason_type, price, rma, reason, created_at, undone_at, device_name, device_ian, warehouses(name), profiles!user_id(username)",
       opts.count ? { count: opts.count } : undefined
     );
 
     const tokens = debouncedSearch.trim().toLowerCase().split(/\s+/).filter(Boolean);
     tokens.forEach((token) => {
-      const q = escapeLike(token);
-      query = query.or(`device_name.ilike.%${q}%,device_ian.ilike.%${q}%`);
+      query = query.ilike("search_text", searchPattern(token));
     });
 
     if (reasonFilter !== "all") query = query.eq("reason_type", reasonFilter);
@@ -275,7 +282,7 @@ export default function DeviceWriteoffs() {
                   <th className="px-3 py-2.5 font-semibold">Data</th>
                   <th className="px-3 py-2.5 font-semibold">Prietaisas</th>
                   <th className="px-3 py-2.5 font-semibold">IAN</th>
-                  <th className="px-3 py-2.5 font-semibold">Lokacija</th>
+                  <th className="px-3 py-2.5 font-semibold">Sandėlis / lokacija</th>
                   <th className="px-3 py-2.5 font-semibold">Kiekis</th>
                   <th className="px-3 py-2.5 font-semibold">Priežastis</th>
                   <th className="px-3 py-2.5 font-semibold">Detalė</th>
@@ -289,7 +296,7 @@ export default function DeviceWriteoffs() {
                     <td className="px-3 py-2.5 text-ink-600/70">{formatDate(w.created_at)}</td>
                     <td className="max-w-[180px] truncate px-3 py-2.5 text-ink-800">{w.device_name || "—"}</td>
                     <td className="max-w-[120px] truncate px-3 py-2.5 font-mono text-ink-900">{w.device_ian || "—"}</td>
-                    <td className="px-3 py-2.5 text-ink-800">{w.location || "—"}</td>
+                    <td className="px-3 py-2.5 text-ink-800">{writeoffWhere(w)}</td>
                     <td className="px-3 py-2.5 font-semibold text-ink-800">-{w.quantity}</td>
                     <td className="px-3 py-2.5 text-ink-800">{REASON_LABELS[w.reason_type] || w.reason_type}</td>
                     <td className="max-w-[160px] truncate px-3 py-2.5 text-ink-600/70">{writeoffDetail(w)}</td>

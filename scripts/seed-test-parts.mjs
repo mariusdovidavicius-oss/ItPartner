@@ -12,6 +12,7 @@
 
 import { readFileSync } from "node:fs";
 import { createClient } from "@supabase/supabase-js";
+import { partIdent } from "../src/lib/partIdent.js";
 
 function readEnvFile(file) {
   const env = {};
@@ -168,16 +169,38 @@ async function main() {
     .maybeSingle();
   if (!admin) console.warn("Adminas nerastas — nurašymai bus be vartotojo (user_id = NULL).");
 
-  const rows = PARTS.map(
-    ([location, main_model, part_code, name, quantity, min_quantity, online_store, compatible_models, notes]) => ({
-      location, main_model, part_code, name, quantity, min_quantity, online_store, compatible_models, notes
-    })
-  );
+  // parts.warehouse_id privalomas (migrate_add_part_warehouses.sql) — visi
+  // bandomieji priedai keliauja į "Lidl servisas" (sukuriamas, jei nėra).
+  let { data: warehouse } = await supabase.from("warehouses").select("id").ilike("name", "lidl servisas").maybeSingle();
+  if (!warehouse) {
+    const { data, error } = await supabase.from("warehouses").insert({ name: "Lidl servisas" }).select("id").single();
+    if (error) {
+      console.error("Nepavyko sukurti sandėlio „Lidl servisas“:", error.message);
+      process.exit(1);
+    }
+    warehouse = data;
+  }
 
-  const { data: inserted, error: insertError } = await supabase
+  // parts — katalogas (vienas įrašas vienam priedui), part_stock — vietos
+  // (migrate_parts_split_stock.sql). Tas pats priedas (partIdent) keliose
+  // PARTS eilutėse — vienas katalogo įrašas su keliomis vietomis.
+  const catalog = new Map(); // ident -> PARTS indeksų sąrašas
+  PARTS.forEach(([, main_model, part_code, name], i) => {
+    const key = partIdent(part_code, name, main_model) ?? `row:${i}`;
+    if (!catalog.has(key)) catalog.set(key, []);
+    catalog.get(key).push(i);
+  });
+
+  const catalogKeys = [...catalog.keys()];
+  const { data: insertedParts, error: insertError } = await supabase
     .from("parts")
-    .insert(rows)
-    .select("id, part_code, location, stock_level");
+    .insert(
+      catalogKeys.map((key) => {
+        const [, main_model, part_code, name, , min_quantity, online_store, compatible_models, notes] = PARTS[catalog.get(key)[0]];
+        return { main_model, part_code, name, min_quantity, online_store, compatible_models, notes };
+      })
+    )
+    .select("id");
   if (insertError) {
     console.error("Klaida įrašant priedus:", insertError.message);
     process.exitCode = 1;
@@ -185,11 +208,26 @@ async function main() {
   }
 
   // insert().select() grąžina eilutes ta pačia tvarka, kaip įrašytos
+  const partIdByRow = [];
+  catalogKeys.forEach((key, k) => catalog.get(key).forEach((i) => { partIdByRow[i] = insertedParts[k].id; }));
+
+  const { data: insertedStock, error: stockError } = await supabase
+    .from("part_stock")
+    .insert(PARTS.map(([location, , , , quantity], i) => ({ part_id: partIdByRow[i], warehouse_id: warehouse.id, location, quantity })))
+    .select("id, location");
+  if (stockError) {
+    console.error("Priedai įrašyti, bet vietų įrašyti nepavyko:", stockError.message);
+    process.exitCode = 1;
+    return;
+  }
+
   const now = Date.now();
   const writeoffRows = WRITEOFFS.map(([idx, quantity, reason_type, detail, daysAgo, undone]) => {
     const createdAt = new Date(now - daysAgo * 86400000).toISOString();
     return {
-      part_id: inserted[idx].id,
+      part_id: partIdByRow[idx],
+      warehouse_id: warehouse.id,
+      location: insertedStock[idx].location,
       user_id: admin?.id ?? null,
       quantity,
       reason_type,
@@ -209,8 +247,7 @@ async function main() {
     return;
   }
 
-  const levels = inserted.reduce((acc, p) => ({ ...acc, [p.stock_level]: (acc[p.stock_level] || 0) + 1 }), {});
-  console.log(`Įrašyta priedų: ${inserted.length} (ok: ${levels.ok || 0}, mažas likutis: ${levels.low || 0}, baigėsi: ${levels.out || 0})`);
+  console.log(`Įrašyta priedų: ${insertedParts.length}, vietų: ${insertedStock.length}`);
   console.log(`Įrašyta nurašymų: ${writeoffRows.length} (1 atšauktas)${admin ? `, vartotojas: ${admin.username}` : ""}`);
 }
 

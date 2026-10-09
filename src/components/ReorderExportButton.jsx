@@ -10,25 +10,26 @@ import { DEFAULT_MIN_QUANTITY } from "../lib/stockLevel";
 // puslapyje nerodome — plytelės "Mažo likučio"/"Pasibaigę" jau veda į
 // filtruotus sąrašus (/priedai?likutis=…).
 //
-// Priedai skaito parts.stock_level (DB generuojamas stulpelis), prietaisai —
-// device_totals view (stock_level skaičiuojamas per visas lokacijas).
+// Priedai skaito part_totals, prietaisai — device_totals view (abiem
+// stock_level skaičiuojamas nuo bendro kiekio per visas lokacijas).
 
 const LEVELS = ["out", "low"];
 
 const KINDS = {
   parts: {
-    table: "parts",
-    select: "id, part_code, name, main_model, location, quantity, min_quantity, stock_level",
-    quantityField: "quantity",
+    table: "part_totals",
+    select: "id, part_code, name, main_model, total_quantity, min_quantity, stock_level, locations_text",
+    quantityField: "total_quantity",
     filePrefix: "priedai",
     normalize: (r) => ({
       level: r.stock_level,
       label: r.name || r.part_code,
       sub: r.main_model || "",
       code: r.part_code,
-      quantity: r.quantity,
+      quantity: r.total_quantity,
       min: r.min_quantity ?? DEFAULT_MIN_QUANTITY,
-      location: r.location
+      // locations_text = "|8 (-1-)|42|" → "8 (-1-), 42"
+      location: String(r.locations_text || "").split("|").filter(Boolean).join(", ")
     })
   },
   devices: {

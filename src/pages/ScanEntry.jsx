@@ -7,7 +7,7 @@ import { supabase } from "../lib/supabaseClient";
 import { computeDestination, prettifyDestination, UNCLASSIFIED } from "../lib/destination";
 import { printPalletLabel } from "../lib/printLabel";
 import { useAuth } from "../lib/AuthProvider";
-import { escapeLike, formatDateTime } from "../lib/format";
+import { searchPattern, formatDateTime } from "../lib/format";
 
 // Leistini gamintojo -> tipo deriniai rankiniam naujo įrankio įvedimui.
 // Reikšmės TIKSLIAI atitinka jau naudojamas catalog.manufacturer/item_type
@@ -17,9 +17,14 @@ const MANUFACTURER_TYPES = {
   Kompernass: ["Prietaisas", "Prietaisas2", "Prietaisas3", "Bat"]
 };
 
+// Naujai sukurta ("open") paletė TYČIA neturi nei "number", nei "code" —
+// abu priskiriami tik UŽDARANT paletę (žr. assign_pallet_number_on_close()
+// schema.sql), ne ją kuriant. Be šio "|| pallet.destination" pakaitalo
+// šablonas paverstų null į pažodinį tekstą "null" vartotojui rodomame
+// pranešime (žr. registerItem() žemiau).
 function formatPalletLabel(pallet) {
   if (!pallet) return "";
-  const base = pallet.number ? `${pallet.number} paletė` : pallet.code;
+  const base = pallet.number ? `${pallet.number} paletė` : (pallet.code || "nauja paletė");
   return `${base} — ${prettifyDestination(pallet.destination)}`;
 }
 
@@ -148,7 +153,7 @@ export default function ScanEntry() {
       const { data } = await supabase
         .from("catalog")
         .select("ian, name, manufacturer, item_type")
-        .ilike("name", `%${escapeLike(trimmed)}%`)
+        .ilike("search_text", searchPattern(trimmed))
         .not("name", "is", null)
         .order("name", { ascending: true })
         .limit(10);
@@ -253,8 +258,10 @@ export default function ScanEntry() {
   // atsilaisvinęs numeris tiesiog taps matoma spraga sekantį kartą. Čia
   // pakanka paprasto DELETE, lygiai taip pat, kaip trinamas pavienis prietaisas.
   async function handleDeletePallet(pallet) {
-    const label = pallet.number ?? pallet.code;
-    if (!confirm(`Ištrinti tuščią paletę Nr. ${label}? Šio veiksmo negalima atšaukti.`)) return;
+    // Tuščia paletė visada "open" būsenos, tad number/code dar null (žr.
+    // formatPalletLabel() aukščiau) — paskirtis yra vienintelis stabilus
+    // identifikatorius, kol paletė neuždaryta.
+    if (!confirm(`Ištrinti tuščią paletę (${prettifyDestination(pallet.destination)})? Šio veiksmo negalima atšaukti.`)) return;
     setDeletingPalletId(pallet.id);
     await supabase.from("pallets").delete().eq("id", pallet.id);
     setDeletingPalletId(null);
@@ -333,7 +340,10 @@ export default function ScanEntry() {
     let currentPallet = existingPallet;
 
     if (!currentPallet) {
-      // Auto-sukurti naują paletę (number ir code nustato DB trigeris)
+      // Auto-sukurti naują paletę — "open" būsenoje number/code TYČIA lieka
+      // null (juos priskiria DB trigeris tik uždarant paletę, žr.
+      // formatPalletLabel() aukščiau), tad čia grąžintoje eilutėje jų dar
+      // nebus.
       const { data: newPallet, error: createError } = await supabase
         .from("pallets")
         .insert({ status: "open", destination })

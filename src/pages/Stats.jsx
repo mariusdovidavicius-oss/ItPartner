@@ -182,7 +182,7 @@ function PartsStatsPanel({ periodState }) {
       if (error) throw error;
       return data;
     },
-    { deps: [periodKey(periodState)], tables: ["parts", "parts_writeoffs"], channel: "parts-stats-realtime" }
+    { deps: [periodKey(periodState)], tables: ["parts", "part_stock", "parts_writeoffs"], channel: "parts-stats-realtime" }
   );
 
   return (
@@ -198,7 +198,7 @@ function PartsStatsPanel({ periodState }) {
                 <ReorderExportButton kind="parts" count={Number(o.low_count) + Number(o.out_count)} />
               </div>
               <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-                <StatTile icon={Boxes} label="Priedų įrašų" value={Number(o.total_parts)} accent="bg-ink-700" />
+                <StatTile icon={Boxes} label="Priedų" value={Number(o.total_parts)} accent="bg-ink-700" />
                 <StatTile icon={Boxes} label="Vienetų iš viso" value={Number(o.total_units)} accent="bg-signal-blue" />
                 <StatTile icon={AlertTriangle} label="Mažo likučio" value={Number(o.low_count)} accent="bg-signal-amber" to="/priedai?likutis=low" />
                 <StatTile icon={PackageX} label="Pasibaigę" value={Number(o.out_count)} accent="bg-signal-red" to="/priedai?likutis=out" />

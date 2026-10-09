@@ -2,11 +2,16 @@ import { useEffect, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { Search, Loader2, ChevronLeft, ChevronRight, PackageMinus, Download, AlertCircle, X } from "lucide-react";
 import { supabase } from "../lib/supabaseClient";
-import { escapeLike, formatDate } from "../lib/format";
+import { searchPattern, formatDate } from "../lib/format";
 import { PART_WRITEOFF_REASONS, reasonLabelMap, summarizeWriteoffs, writeoffDetail } from "../lib/writeoffReasons";
 import { periodKey, periodRange, periodStateFromParams } from "../lib/period";
 import { fetchAllRows } from "../lib/fetchAll";
 import WriteoffSummary from "../components/WriteoffSummary";
+
+// Nurašymo vieta — sandėlio/lokacijos kopija nurašymo metu (parts_writeoffs).
+function writeoffPlace(w) {
+  return [w.warehouses?.name, w.location].filter(Boolean).join(" — ");
+}
 import PeriodFilter from "../components/PeriodFilter";
 
 const PAGE_SIZE_OPTIONS = [10, 25, 50, 100];
@@ -59,14 +64,13 @@ export default function PartsWriteoffs() {
   function buildQuery(opts = {}) {
     let query = supabase.from("parts_writeoffs").select(
       opts.select ??
-        "id, quantity, reason_type, price, rma, reason, created_at, undone_at, parts!inner(name, part_code, main_model, location), profiles!user_id(username)",
+        "id, quantity, reason_type, price, rma, reason, created_at, undone_at, location, warehouses(name), parts!inner(name, part_code, main_model), profiles!user_id(username)",
       opts.count ? { count: opts.count } : undefined
     );
 
     const tokens = debouncedSearch.trim().toLowerCase().split(/\s+/).filter(Boolean);
     tokens.forEach((token) => {
-      const q = escapeLike(token);
-      query = query.or(`name.ilike.%${q}%,part_code.ilike.%${q}%,main_model.ilike.%${q}%`, { referencedTable: "parts" });
+      query = query.ilike("parts.search_text", searchPattern(token));
     });
 
     if (reasonFilter !== "all") query = query.eq("reason_type", reasonFilter);
@@ -286,6 +290,7 @@ export default function PartsWriteoffs() {
                   <th className="px-3 py-2.5 font-semibold">Priedas</th>
                   <th className="px-3 py-2.5 font-semibold">Modelis</th>
                   <th className="px-3 py-2.5 font-semibold">Kodas</th>
+                  <th className="px-3 py-2.5 font-semibold">Vieta</th>
                   <th className="px-3 py-2.5 font-semibold">Kiekis</th>
                   <th className="px-3 py-2.5 font-semibold">Priežastis</th>
                   <th className="px-3 py-2.5 font-semibold">{DETAIL_HEADERS[reasonFilter] || DETAIL_HEADER_ALL}</th>
@@ -300,6 +305,7 @@ export default function PartsWriteoffs() {
                     <td className="max-w-[180px] truncate px-3 py-2.5 text-ink-800" title={w.parts?.name || undefined}>{w.parts?.name || "—"}</td>
                     <td className="max-w-[160px] truncate px-3 py-2.5 text-ink-600/80" title={w.parts?.main_model || undefined}>{w.parts?.main_model || "—"}</td>
                     <td className="max-w-[110px] truncate px-3 py-2.5 font-mono text-ink-900">{w.parts?.part_code || "—"}</td>
+                    <td className="max-w-[160px] truncate px-3 py-2.5 text-ink-600/80" title={writeoffPlace(w) || undefined}>{writeoffPlace(w) || "—"}</td>
                     <td className="px-3 py-2.5 font-semibold text-ink-800">-{w.quantity}</td>
                     <td className="px-3 py-2.5 text-ink-800">{REASON_LABELS[w.reason_type] || w.reason_type}</td>
                     <td className="max-w-[160px] truncate px-3 py-2.5 text-ink-600/70" title={writeoffDetail(w)}>{writeoffDetail(w)}</td>

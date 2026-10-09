@@ -1,20 +1,36 @@
-import { useEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import {
-  PackageCheck, PackageMinus, Trash2, Loader2, AlertCircle, X, Upload, FileText, RotateCcw
+  PackageCheck, PackageMinus, Trash2, Loader2, AlertCircle, X, Upload, FileText, RotateCcw,
+  ChevronDown, ChevronUp
 } from "lucide-react";
 import { supabase } from "../lib/supabaseClient";
 import { useAuth } from "../lib/AuthProvider";
 import { readTransferPdfRows } from "../lib/readTransferPdf";
 import { formatDate } from "../lib/format";
 
-// Rodo, KUR sandėlyje prietaiso šiuo metu yra (dar nepasirinkta konkreti
-// lokacija — tai įvyksta tik pažymint "paimta") — padeda greitai susirasti
-// nueinant į sandėlį.
+// Rodo, KUR (kuriame sandėlyje/lokacijoje) prietaiso šiuo metu yra (dar
+// nepasirinkta konkreti vieta — tai įvyksta tik pažymint "paimta") — padeda
+// greitai susirasti nueinant į sandėlį.
+// Tik eilutės su likučiu — tas pats apribojimas taikomas ir "Laukia" sandėlio
+// filtrui, kad filtras nerodytų prietaiso, kurio lokacijose tas sandėlis
+// net nematomas (0 vnt. eilutės).
+function inStock(stock) {
+  return (stock || []).filter((s) => (s.quantity ?? 0) > 0);
+}
+
 function formatLocations(stock) {
-  const rows = (stock || []).filter((s) => (s.quantity ?? 0) > 0);
+  const rows = inStock(stock);
   if (rows.length === 0) return "—";
-  return rows.map((s) => `${s.location} (${s.quantity})`).join(", ");
+  return rows.map((s) => `${s.warehouses?.name ? `${s.warehouses.name} — ` : ""}${s.location} (${s.quantity})`).join(", ");
+}
+
+// "Paimta" sąrašo įraše — iš kurio sandėlio/lokacijos paimta (abu — teksto
+// kopijos, užfiksuotos mark_device_picked() metu, žr. formatLocations() aukščiau
+// dėl to paties principo "Laukia" sąraše).
+function pickedWhere(item) {
+  if (!item.picked_location) return "—";
+  return item.picked_warehouse_name ? `${item.picked_warehouse_name} — ${item.picked_location}` : item.picked_location;
 }
 
 // Garantinio serviso srautas: klientas atsiunčia sugedusį prietaisą,
@@ -49,18 +65,37 @@ export default function DevicePickups() {
   const [finalizingId, setFinalizingId] = useState(null);
   const [unpickingId, setUnpickingId] = useState(null);
   const [manufacturerFilter, setManufacturerFilter] = useState("");
+  // Sandėlio filtrai — atskiri kiekvienai sekcijai, nes reiškia skirtingus
+  // dalykus: "Laukia" filtruoja pagal tai, KUR prietaisas ŠIUO METU turi
+  // likučio (device_stock.warehouse), o "Paimta" — iš KURIO sandėlio buvo
+  // faktiškai paimta (picked_warehouse_name, istorinė teksto kopija).
+  const [pendingWarehouseFilter, setPendingWarehouseFilter] = useState("");
+  const [pickedWarehouseFilter, setPickedWarehouseFilter] = useState("");
+  // "Laukia" eilučių iškleidimas — pavadinimas/lokacijos/pastaba lentelėje
+  // apkarpomi siauruose stulpeliuose (žr. formatLocations()), tad iškleidus
+  // parodoma pilna, neapkarpyta informacija (lygiai kaip /prietaisai sąraše).
+  const [expandedIds, setExpandedIds] = useState(new Set());
+
+  function toggleExpand(id) {
+    setExpandedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
 
   async function load() {
     setLoading(true);
     const [{ data: pendingData }, { data: pickedData }] = await Promise.all([
       supabase
         .from("device_pickups")
-        .select("id, device_id, quantity, note, created_at, devices(name, ian, manufacturer, device_stock(location, quantity))")
+        .select("id, device_id, quantity, note, created_at, devices(name, ian, manufacturer, device_stock(location, quantity, warehouses(name)))")
         .is("picked_at", null)
         .order("created_at", { ascending: true }),
       supabase
         .from("device_pickups")
-        .select("id, quantity, note, picked_at, picked_location, writeoff_id, devices(name, ian), profiles!picked_by(username)")
+        .select("id, quantity, note, picked_at, picked_location, picked_warehouse_name, writeoff_id, devices(name, ian, manufacturer), profiles!picked_by(username)")
         .not("picked_at", "is", null)
         .order("picked_at", { ascending: false })
         .limit(50)
@@ -93,15 +128,16 @@ export default function DevicePickups() {
   }
 
   // Grąžina klaidos tekstą, jei nepavyko — PickModal tada rodo ją formoje
-  // ir NEUŽDARO jos.
-  async function handlePick(item, location) {
-    const { error } = await supabase.rpc("mark_device_picked", { p_pickup_id: item.id, p_location: location });
+  // ir NEUŽDARO jos. "stockId" (device_stock.id) — ne lokacijos tekstas, žr.
+  // tą patį komentarą Devices.jsx WriteoffModal.
+  async function handlePick(item, stockId) {
+    const { error } = await supabase.rpc("mark_device_picked", { p_pickup_id: item.id, p_stock_id: stockId });
     if (error) return error.message;
     setPickTarget(null);
   }
 
   async function handleFinalize(item) {
-    if (!confirm(`Nurašyti „${item.devices?.name || item.devices?.ian || "—"}“ (${item.quantity} vnt.) iš lokacijos ${item.picked_location}?`)) return;
+    if (!confirm(`Nurašyti „${item.devices?.name || item.devices?.ian || "—"}“ (${item.quantity} vnt.) iš lokacijos ${pickedWhere(item)}?`)) return;
     setFinalizingId(item.id);
     const { error } = await supabase.rpc("finalize_device_pickup", { p_pickup_id: item.id });
     setFinalizingId(null);
@@ -119,9 +155,23 @@ export default function DevicePickups() {
   }
 
   const manufacturerOptions = [...new Set(pending.map((p) => p.devices?.manufacturer).filter(Boolean))].sort();
-  const filteredPending = manufacturerFilter
-    ? pending.filter((p) => p.devices?.manufacturer === manufacturerFilter)
-    : pending;
+  const pendingWarehouseOptions = [
+    ...new Set(
+      pending.flatMap((p) => inStock(p.devices?.device_stock).map((s) => s.warehouses?.name).filter(Boolean))
+    )
+  ].sort();
+  const filteredPending = pending.filter((p) => {
+    if (manufacturerFilter && p.devices?.manufacturer !== manufacturerFilter) return false;
+    if (pendingWarehouseFilter && !inStock(p.devices?.device_stock).some((s) => s.warehouses?.name === pendingWarehouseFilter)) {
+      return false;
+    }
+    return true;
+  });
+
+  const pickedWarehouseOptions = [...new Set(picked.map((p) => p.picked_warehouse_name).filter(Boolean))].sort();
+  const filteredPicked = pickedWarehouseFilter
+    ? picked.filter((p) => p.picked_warehouse_name === pickedWarehouseFilter)
+    : picked;
 
   return (
     <div className="space-y-6">
@@ -159,21 +209,38 @@ export default function DevicePickups() {
           <p className="text-xs font-semibold uppercase tracking-wide text-ink-600/50">
             Laukia {filteredPending.length > 0 && `(${filteredPending.length})`}
           </p>
-          {manufacturerOptions.length > 0 && (
-            <label className="flex shrink-0 items-center gap-2 text-xs font-medium text-ink-600/70">
-              Gamintojas
-              <select
-                value={manufacturerFilter}
-                onChange={(e) => setManufacturerFilter(e.target.value)}
-                className="input-field w-auto py-1.5 text-sm"
-              >
-                <option value="">Visi</option>
-                {manufacturerOptions.map((m) => (
-                  <option key={m} value={m}>{m}</option>
-                ))}
-              </select>
-            </label>
-          )}
+          <div className="flex flex-wrap items-center gap-3">
+            {manufacturerOptions.length > 0 && (
+              <label className="flex shrink-0 items-center gap-2 text-xs font-medium text-ink-600/70">
+                Gamintojas
+                <select
+                  value={manufacturerFilter}
+                  onChange={(e) => setManufacturerFilter(e.target.value)}
+                  className="input-field w-auto py-1.5 text-sm"
+                >
+                  <option value="">Visi</option>
+                  {manufacturerOptions.map((m) => (
+                    <option key={m} value={m}>{m}</option>
+                  ))}
+                </select>
+              </label>
+            )}
+            {pendingWarehouseOptions.length > 0 && (
+              <label className="flex shrink-0 items-center gap-2 text-xs font-medium text-ink-600/70">
+                Sandėlis
+                <select
+                  value={pendingWarehouseFilter}
+                  onChange={(e) => setPendingWarehouseFilter(e.target.value)}
+                  className="input-field w-auto py-1.5 text-sm"
+                >
+                  <option value="">Visi</option>
+                  {pendingWarehouseOptions.map((w) => (
+                    <option key={w} value={w}>{w}</option>
+                  ))}
+                </select>
+              </label>
+            )}
+          </div>
         </div>
         <div className="panel overflow-hidden p-0">
           {loading ? (
@@ -187,50 +254,64 @@ export default function DevicePickups() {
             </div>
           ) : filteredPending.length === 0 ? (
             <div className="flex flex-col items-center gap-2 py-10 text-center">
-              <p className="text-sm text-ink-600/60">Pagal pasirinktą gamintoją nieko nerasta.</p>
+              <p className="text-sm text-ink-600/60">Pagal pasirinktus filtrus nieko nerasta.</p>
             </div>
           ) : (
             <>
               {/* Telefone — veiksmo mygtukai virš pavadinimo (ne lentelės gale), kad juos būtų galima
                   paspausti be horizontalaus skrolinimo; nuo sm rodoma pilna lentelė žemiau. */}
               <div className="divide-y divide-ink-900/5 sm:hidden">
-                {filteredPending.map((item) => (
-                  <div key={item.id} className="p-3">
-                    <div className="flex items-center gap-2">
-                      <button
-                        type="button"
-                        onClick={() => setPickTarget(item)}
-                        className="btn-secondary flex-1 border-signal-teal/30 text-signal-teal hover:bg-signal-teal/10"
-                      >
-                        <PackageCheck size={14} /> Paimta
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => handleDelete(item)}
-                        disabled={deletingId === item.id}
-                        className="shrink-0 rounded-lg p-2 text-ink-600/40 hover:bg-signal-red/10 hover:text-signal-red"
-                        aria-label="Pašalinti punktą"
-                      >
-                        {deletingId === item.id ? <Loader2 size={14} className="animate-spin" /> : <Trash2 size={14} />}
-                      </button>
+                {filteredPending.map((item) => {
+                  const expanded = expandedIds.has(item.id);
+                  return (
+                    <div key={item.id} className="p-3">
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => toggleExpand(item.id)}
+                          className="shrink-0 rounded-lg p-1.5 text-ink-600/40 hover:bg-ink-900/5 hover:text-ink-900"
+                          aria-label="Peržiūrėti pilną informaciją"
+                        >
+                          {expanded ? <ChevronUp size={15} /> : <ChevronDown size={15} />}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setPickTarget(item)}
+                          className="btn-secondary flex-1 border-signal-teal/30 text-signal-teal hover:bg-signal-teal/10"
+                        >
+                          <PackageCheck size={14} /> Paimta
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleDelete(item)}
+                          disabled={deletingId === item.id}
+                          className="shrink-0 rounded-lg p-2 text-ink-600/40 hover:bg-signal-red/10 hover:text-signal-red"
+                          aria-label="Pašalinti punktą"
+                        >
+                          {deletingId === item.id ? <Loader2 size={14} className="animate-spin" /> : <Trash2 size={14} />}
+                        </button>
+                      </div>
+                      <p className={`mt-2 text-sm font-medium text-ink-900 ${expanded ? "" : "truncate"}`}>{item.devices?.name || "—"}</p>
+                      <p className="truncate font-mono text-xs text-ink-600/60">{item.devices?.ian || "—"}</p>
+                      <p className={`mt-1 text-xs text-ink-600/70 ${expanded ? "" : "truncate"}`}>
+                        {item.quantity} vnt. · {formatLocations(item.devices?.device_stock)}
+                      </p>
+                      {item.note && (
+                        <p className={`mt-1 text-xs text-ink-600/60 ${expanded ? "" : "truncate"}`}>Pastaba: {item.note}</p>
+                      )}
+                      <p className="mt-1 truncate text-[11px] text-ink-600/40">
+                        {item.devices?.manufacturer || "—"} · {formatDate(item.created_at)}
+                      </p>
                     </div>
-                    <p className="mt-2 truncate text-sm font-medium text-ink-900">{item.devices?.name || "—"}</p>
-                    <p className="truncate font-mono text-xs text-ink-600/60">{item.devices?.ian || "—"}</p>
-                    <p className="mt-1 text-xs text-ink-600/70">
-                      {item.quantity} vnt. · {formatLocations(item.devices?.device_stock)}
-                    </p>
-                    {item.note && <p className="mt-1 truncate text-xs text-ink-600/60">Pastaba: {item.note}</p>}
-                    <p className="mt-1 truncate text-[11px] text-ink-600/40">
-                      {item.devices?.manufacturer || "—"} · {formatDate(item.created_at)}
-                    </p>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
 
               <div className="hidden overflow-x-auto sm:block">
                 <table className="w-full text-left text-sm">
                   <thead className="border-b border-ink-900/5 bg-ink-900/[0.02] text-xs uppercase tracking-wide text-ink-600/60">
                     <tr>
+                      <th className="w-8 px-2 py-2.5"></th>
                       <th className="px-3 py-2.5 font-semibold">Prietaisas</th>
                       <th className="px-3 py-2.5 font-semibold">IAN</th>
                       <th className="px-3 py-2.5 font-semibold">Lokacijos</th>
@@ -242,49 +323,75 @@ export default function DevicePickups() {
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-ink-900/5">
-                    {filteredPending.map((item) => (
-                      <tr key={item.id} className="hover:bg-ink-900/[0.015]">
-                        <td
-                          className="max-w-[200px] truncate px-3 py-2.5 text-ink-800"
-                          title={item.devices?.name || undefined}
-                        >
-                          {item.devices?.name || "—"}
-                        </td>
-                        <td className="px-3 py-2.5 font-mono text-xs text-ink-600/70">{item.devices?.ian || "—"}</td>
-                        <td className="max-w-[200px] truncate px-3 py-2.5 text-ink-600/70">
-                          {formatLocations(item.devices?.device_stock)}
-                        </td>
-                        <td className="px-3 py-2.5 font-semibold text-ink-800">{item.quantity}</td>
-                        <td
-                          className="max-w-[200px] truncate px-3 py-2.5 text-ink-600/70"
-                          title={item.note || undefined}
-                        >
-                          {item.note || "—"}
-                        </td>
-                        <td className="px-3 py-2.5 text-ink-600/70">{formatDate(item.created_at)}</td>
-                        <td className="px-3 py-2.5 text-ink-800">{item.devices?.manufacturer || "—"}</td>
-                        <td className="px-3 py-2.5">
-                          <div className="flex items-center justify-end gap-2">
-                            <button
-                              type="button"
-                              onClick={() => setPickTarget(item)}
-                              className="btn-secondary shrink-0 border-signal-teal/30 text-signal-teal hover:bg-signal-teal/10"
+                    {filteredPending.map((item) => {
+                      const expanded = expandedIds.has(item.id);
+                      return (
+                        <Fragment key={item.id}>
+                          <tr className={expanded ? "bg-ink-900/[0.015]" : "hover:bg-ink-900/[0.015]"}>
+                            <td className="px-2 py-2.5">
+                              <button
+                                type="button"
+                                onClick={() => toggleExpand(item.id)}
+                                className="rounded-lg p-1 text-ink-600/50 hover:bg-ink-900/5 hover:text-ink-900"
+                                aria-label="Peržiūrėti pilną informaciją"
+                              >
+                                {expanded ? <ChevronUp size={15} /> : <ChevronDown size={15} />}
+                              </button>
+                            </td>
+                            <td
+                              className="max-w-[200px] truncate px-3 py-2.5 text-ink-800"
+                              title={item.devices?.name || undefined}
                             >
-                              <PackageCheck size={14} /> Paimta
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => handleDelete(item)}
-                              disabled={deletingId === item.id}
-                              className="shrink-0 rounded-lg p-1.5 text-ink-600/40 hover:bg-signal-red/10 hover:text-signal-red"
-                              aria-label="Pašalinti punktą"
+                              {item.devices?.name || "—"}
+                            </td>
+                            <td className="px-3 py-2.5 font-mono text-xs text-ink-600/70">{item.devices?.ian || "—"}</td>
+                            <td className="max-w-[200px] truncate px-3 py-2.5 text-ink-600/70">
+                              {formatLocations(item.devices?.device_stock)}
+                            </td>
+                            <td className="px-3 py-2.5 font-semibold text-ink-800">{item.quantity}</td>
+                            <td
+                              className="max-w-[200px] truncate px-3 py-2.5 text-ink-600/70"
+                              title={item.note || undefined}
                             >
-                              {deletingId === item.id ? <Loader2 size={14} className="animate-spin" /> : <Trash2 size={14} />}
-                            </button>
-                          </div>
-                        </td>
-                      </tr>
-                    ))}
+                              {item.note || "—"}
+                            </td>
+                            <td className="px-3 py-2.5 text-ink-600/70">{formatDate(item.created_at)}</td>
+                            <td className="px-3 py-2.5 text-ink-800">{item.devices?.manufacturer || "—"}</td>
+                            <td className="px-3 py-2.5">
+                              <div className="flex items-center justify-end gap-2">
+                                <button
+                                  type="button"
+                                  onClick={() => setPickTarget(item)}
+                                  className="btn-secondary shrink-0 border-signal-teal/30 text-signal-teal hover:bg-signal-teal/10"
+                                >
+                                  <PackageCheck size={14} /> Paimta
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => handleDelete(item)}
+                                  disabled={deletingId === item.id}
+                                  className="shrink-0 rounded-lg p-1.5 text-ink-600/40 hover:bg-signal-red/10 hover:text-signal-red"
+                                  aria-label="Pašalinti punktą"
+                                >
+                                  {deletingId === item.id ? <Loader2 size={14} className="animate-spin" /> : <Trash2 size={14} />}
+                                </button>
+                              </div>
+                            </td>
+                          </tr>
+                          {expanded && (
+                            <tr className="bg-ink-900/[0.015]">
+                              <td colSpan={9} className="space-y-1.5 px-4 py-3 text-sm">
+                                <p><span className="font-semibold text-ink-600/70">Prietaisas:</span> {item.devices?.name || "—"}</p>
+                                <p><span className="font-semibold text-ink-600/70">IAN:</span> <span className="font-mono">{item.devices?.ian || "—"}</span></p>
+                                <p><span className="font-semibold text-ink-600/70">Lokacijos:</span> {formatLocations(item.devices?.device_stock)}</p>
+                                <p><span className="font-semibold text-ink-600/70">Gamintojas:</span> {item.devices?.manufacturer || "—"}</p>
+                                {item.note && <p><span className="font-semibold text-ink-600/70">Pastaba:</span> {item.note}</p>}
+                              </td>
+                            </tr>
+                          )}
+                        </Fragment>
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>
@@ -294,68 +401,108 @@ export default function DevicePickups() {
       </div>
 
       <div>
-        <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-ink-600/50">
-          Paimta {picked.length > 0 && "(paskutiniai 50)"}
-        </p>
+        <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+          <p className="text-xs font-semibold uppercase tracking-wide text-ink-600/50">
+            Paimta {picked.length > 0 && "(paskutiniai 50)"}
+          </p>
+          {pickedWarehouseOptions.length > 0 && (
+            <label className="flex shrink-0 items-center gap-2 text-xs font-medium text-ink-600/70">
+              Sandėlis
+              <select
+                value={pickedWarehouseFilter}
+                onChange={(e) => setPickedWarehouseFilter(e.target.value)}
+                className="input-field w-auto py-1.5 text-sm"
+              >
+                <option value="">Visi</option>
+                {pickedWarehouseOptions.map((w) => (
+                  <option key={w} value={w}>{w}</option>
+                ))}
+              </select>
+            </label>
+          )}
+        </div>
         <div className="panel overflow-hidden p-0">
           {!loading && picked.length === 0 ? (
             <div className="flex flex-col items-center gap-2 py-10 text-center">
               <p className="text-sm text-ink-600/60">Dar nieko nepaimta.</p>
+            </div>
+          ) : !loading && filteredPicked.length === 0 ? (
+            <div className="flex flex-col items-center gap-2 py-10 text-center">
+              <p className="text-sm text-ink-600/60">Pagal pasirinktą sandėlį nieko nerasta.</p>
             </div>
           ) : (
             <>
               {/* Telefone — veiksmo mygtukai virš pavadinimo (ne lentelės gale); nuo sm rodoma pilna
                   lentelė žemiau. */}
               <div className="divide-y divide-ink-900/5 sm:hidden">
-                {picked.map((item) => (
-                  <div key={item.id} className="p-3">
-                    {item.writeoff_id ? (
-                      <span className="text-xs font-medium text-ink-600/50">Nurašyta</span>
-                    ) : (
+                {filteredPicked.map((item) => {
+                  const expanded = expandedIds.has(item.id);
+                  return (
+                    <div key={item.id} className="p-3">
                       <div className="flex items-center gap-2">
-                        {canFinalize && (
-                          <button
-                            type="button"
-                            onClick={() => handleFinalize(item)}
-                            disabled={finalizingId === item.id || unpickingId === item.id}
-                            className="btn-secondary flex-1 border-signal-amber/30 text-signal-amber hover:bg-signal-amber/10"
-                          >
-                            {finalizingId === item.id ? <Loader2 size={14} className="animate-spin" /> : <PackageMinus size={14} />}
-                            Nurašyti
-                          </button>
-                        )}
                         <button
                           type="button"
-                          onClick={() => handleUnpick(item)}
-                          disabled={unpickingId === item.id || finalizingId === item.id}
-                          className="shrink-0 text-xs font-medium text-ink-600/60 underline decoration-dotted hover:text-ink-900 disabled:opacity-50"
+                          onClick={() => toggleExpand(item.id)}
+                          className="shrink-0 rounded-lg p-1.5 text-ink-600/40 hover:bg-ink-900/5 hover:text-ink-900"
+                          aria-label="Peržiūrėti pilną informaciją"
                         >
-                          {unpickingId === item.id ? "Grąžinama…" : "Atgal"}
+                          {expanded ? <ChevronUp size={15} /> : <ChevronDown size={15} />}
                         </button>
+                        {item.writeoff_id ? (
+                          <span className="text-xs font-medium text-ink-600/50">Nurašyta</span>
+                        ) : (
+                          <>
+                            {canFinalize && (
+                              <button
+                                type="button"
+                                onClick={() => handleFinalize(item)}
+                                disabled={finalizingId === item.id || unpickingId === item.id}
+                                className="btn-secondary flex-1 border-signal-amber/30 text-signal-amber hover:bg-signal-amber/10"
+                              >
+                                {finalizingId === item.id ? <Loader2 size={14} className="animate-spin" /> : <PackageMinus size={14} />}
+                                Nurašyti
+                              </button>
+                            )}
+                            <button
+                              type="button"
+                              onClick={() => handleUnpick(item)}
+                              disabled={unpickingId === item.id || finalizingId === item.id}
+                              className="shrink-0 text-xs font-medium text-ink-600/60 underline decoration-dotted hover:text-ink-900 disabled:opacity-50"
+                            >
+                              {unpickingId === item.id ? "Grąžinama…" : "Atgal"}
+                            </button>
+                          </>
+                        )}
                       </div>
-                    )}
-                    <p className="mt-2 truncate text-sm font-medium text-ink-900">
-                      {item.devices?.name || "—"}{" "}
-                      <span className="font-mono text-xs text-ink-600/50">({item.devices?.ian})</span>
-                    </p>
-                    <p className="mt-1 text-xs text-ink-600/70">
-                      {item.quantity} vnt. · {item.picked_location || "—"}
-                    </p>
-                    {item.note && <p className="mt-1 truncate text-xs text-ink-600/60">Pastaba: {item.note}</p>}
-                    <p className="mt-1 truncate text-[11px] text-ink-600/40">
-                      {formatDate(item.picked_at)} · {item.profiles?.username || "—"}
-                    </p>
-                  </div>
-                ))}
+                      <p className={`mt-2 text-sm font-medium text-ink-900 ${expanded ? "" : "truncate"}`}>
+                        {item.devices?.name || "—"}{" "}
+                        <span className="font-mono text-xs text-ink-600/50">({item.devices?.ian})</span>
+                      </p>
+                      <p className={`mt-1 text-xs text-ink-600/70 ${expanded ? "" : "truncate"}`}>
+                        {item.quantity} vnt. · {pickedWhere(item)}
+                      </p>
+                      {item.note && (
+                        <p className={`mt-1 text-xs text-ink-600/60 ${expanded ? "" : "truncate"}`}>Pastaba: {item.note}</p>
+                      )}
+                      <p className="mt-1 truncate text-[11px] text-ink-600/40">
+                        {formatDate(item.picked_at)} · {item.profiles?.username || "—"}
+                      </p>
+                      {expanded && (
+                        <p className="mt-1 text-[11px] text-ink-600/40">Gamintojas: {item.devices?.manufacturer || "—"}</p>
+                      )}
+                    </div>
+                  );
+                })}
               </div>
 
               <div className="hidden overflow-x-auto sm:block">
                 <table className="w-full text-left text-sm">
                   <thead className="border-b border-ink-900/5 bg-ink-900/[0.02] text-xs uppercase tracking-wide text-ink-600/60">
                     <tr>
+                      <th className="w-8 px-2 py-2.5"></th>
                       <th className="px-3 py-2.5 font-semibold">Prietaisas</th>
                       <th className="px-3 py-2.5 font-semibold">Kiekis</th>
-                      <th className="px-3 py-2.5 font-semibold">Lokacija</th>
+                      <th className="px-3 py-2.5 font-semibold">Sandėlis / lokacija</th>
                       <th className="px-3 py-2.5 font-semibold">Pastaba</th>
                       <th className="px-3 py-2.5 font-semibold">Paimta</th>
                       <th className="px-3 py-2.5 font-semibold">Kas</th>
@@ -363,46 +510,72 @@ export default function DevicePickups() {
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-ink-900/5">
-                    {picked.map((item) => (
-                      <tr key={item.id} className="hover:bg-ink-900/[0.015]">
-                        <td className="max-w-[220px] truncate px-3 py-2.5 text-ink-800">
-                          {item.devices?.name || "—"}{" "}
-                          <span className="font-mono text-xs text-ink-600/50">({item.devices?.ian})</span>
-                        </td>
-                        <td className="px-3 py-2.5 font-semibold text-ink-800">{item.quantity}</td>
-                        <td className="px-3 py-2.5 text-ink-800">{item.picked_location || "—"}</td>
-                        <td className="max-w-[220px] truncate px-3 py-2.5 text-ink-600/70">{item.note || "—"}</td>
-                        <td className="px-3 py-2.5 text-ink-600/70">{formatDate(item.picked_at)}</td>
-                        <td className="px-3 py-2.5 text-ink-600/70">{item.profiles?.username || "—"}</td>
-                        <td className="px-3 py-2.5">
-                          {item.writeoff_id ? (
-                            <span className="text-xs font-medium text-ink-600/50">Nurašyta</span>
-                          ) : (
-                            <div className="flex items-center gap-2">
-                              {canFinalize && (
-                                <button
-                                  type="button"
-                                  onClick={() => handleFinalize(item)}
-                                  disabled={finalizingId === item.id || unpickingId === item.id}
-                                  className="btn-secondary shrink-0 border-signal-amber/30 text-signal-amber hover:bg-signal-amber/10"
-                                >
-                                  {finalizingId === item.id ? <Loader2 size={14} className="animate-spin" /> : <PackageMinus size={14} />}
-                                  Nurašyti
-                                </button>
-                              )}
+                    {filteredPicked.map((item) => {
+                      const expanded = expandedIds.has(item.id);
+                      return (
+                        <Fragment key={item.id}>
+                          <tr className={expanded ? "bg-ink-900/[0.015]" : "hover:bg-ink-900/[0.015]"}>
+                            <td className="px-2 py-2.5">
                               <button
                                 type="button"
-                                onClick={() => handleUnpick(item)}
-                                disabled={unpickingId === item.id || finalizingId === item.id}
-                                className="text-xs font-medium text-ink-600/60 underline decoration-dotted hover:text-ink-900 disabled:opacity-50"
+                                onClick={() => toggleExpand(item.id)}
+                                className="rounded-lg p-1 text-ink-600/50 hover:bg-ink-900/5 hover:text-ink-900"
+                                aria-label="Peržiūrėti pilną informaciją"
                               >
-                                {unpickingId === item.id ? "Grąžinama…" : "Atgal"}
+                                {expanded ? <ChevronUp size={15} /> : <ChevronDown size={15} />}
                               </button>
-                            </div>
+                            </td>
+                            <td className="max-w-[220px] truncate px-3 py-2.5 text-ink-800">
+                              {item.devices?.name || "—"}{" "}
+                              <span className="font-mono text-xs text-ink-600/50">({item.devices?.ian})</span>
+                            </td>
+                            <td className="px-3 py-2.5 font-semibold text-ink-800">{item.quantity}</td>
+                            <td className="px-3 py-2.5 text-ink-800">{pickedWhere(item)}</td>
+                            <td className="max-w-[220px] truncate px-3 py-2.5 text-ink-600/70">{item.note || "—"}</td>
+                            <td className="px-3 py-2.5 text-ink-600/70">{formatDate(item.picked_at)}</td>
+                            <td className="px-3 py-2.5 text-ink-600/70">{item.profiles?.username || "—"}</td>
+                            <td className="px-3 py-2.5">
+                              {item.writeoff_id ? (
+                                <span className="text-xs font-medium text-ink-600/50">Nurašyta</span>
+                              ) : (
+                                <div className="flex items-center gap-2">
+                                  {canFinalize && (
+                                    <button
+                                      type="button"
+                                      onClick={() => handleFinalize(item)}
+                                      disabled={finalizingId === item.id || unpickingId === item.id}
+                                      className="btn-secondary shrink-0 border-signal-amber/30 text-signal-amber hover:bg-signal-amber/10"
+                                    >
+                                      {finalizingId === item.id ? <Loader2 size={14} className="animate-spin" /> : <PackageMinus size={14} />}
+                                      Nurašyti
+                                    </button>
+                                  )}
+                                  <button
+                                    type="button"
+                                    onClick={() => handleUnpick(item)}
+                                    disabled={unpickingId === item.id || finalizingId === item.id}
+                                    className="text-xs font-medium text-ink-600/60 underline decoration-dotted hover:text-ink-900 disabled:opacity-50"
+                                  >
+                                    {unpickingId === item.id ? "Grąžinama…" : "Atgal"}
+                                  </button>
+                                </div>
+                              )}
+                            </td>
+                          </tr>
+                          {expanded && (
+                            <tr className="bg-ink-900/[0.015]">
+                              <td colSpan={8} className="space-y-1.5 px-4 py-3 text-sm">
+                                <p><span className="font-semibold text-ink-600/70">Prietaisas:</span> {item.devices?.name || "—"}</p>
+                                <p><span className="font-semibold text-ink-600/70">IAN:</span> <span className="font-mono">{item.devices?.ian || "—"}</span></p>
+                                <p><span className="font-semibold text-ink-600/70">Sandėlis / lokacija:</span> {pickedWhere(item)}</p>
+                                <p><span className="font-semibold text-ink-600/70">Gamintojas:</span> {item.devices?.manufacturer || "—"}</p>
+                                {item.note && <p><span className="font-semibold text-ink-600/70">Pastaba:</span> {item.note}</p>}
+                              </td>
+                            </tr>
                           )}
-                        </td>
-                      </tr>
-                    ))}
+                        </Fragment>
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>
@@ -415,7 +588,7 @@ export default function DevicePickups() {
         <PickModal
           item={pickTarget}
           onClose={() => setPickTarget(null)}
-          onPick={(location) => handlePick(pickTarget, location)}
+          onPick={(stockId) => handlePick(pickTarget, stockId)}
         />
       )}
     </div>
@@ -424,7 +597,9 @@ export default function DevicePickups() {
 
 function PickModal({ item, onClose, onPick }) {
   const [locations, setLocations] = useState(null); // null = kraunama
-  const [location, setLocation] = useState("");
+  // "stockId" (device_stock.id) — pasirenkant, IŠ KURIO sandėlio/lokacijos
+  // paimta; ta pati lokacija gali kartotis skirtinguose sandėliuose.
+  const [stockId, setStockId] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
 
@@ -432,7 +607,7 @@ function PickModal({ item, onClose, onPick }) {
     let active = true;
     supabase
       .from("device_stock")
-      .select("location, quantity")
+      .select("id, location, quantity, warehouses(name)")
       .eq("device_id", item.device_id)
       .gt("quantity", 0)
       .order("location", { ascending: true })
@@ -440,7 +615,7 @@ function PickModal({ item, onClose, onPick }) {
         if (!active) return;
         const rows = data || [];
         setLocations(rows);
-        if (rows.length) setLocation(rows[0].location);
+        if (rows.length) setStockId(rows[0].id);
       });
     return () => {
       active = false;
@@ -449,13 +624,13 @@ function PickModal({ item, onClose, onPick }) {
 
   async function submit(e) {
     e.preventDefault();
-    if (!location) {
-      setError("Pasirinkite lokaciją.");
+    if (!stockId) {
+      setError("Pasirinkite sandėlį/lokaciją.");
       return;
     }
     setSaving(true);
     setError("");
-    const errorMessage = await onPick(location);
+    const errorMessage = await onPick(stockId);
     setSaving(false);
     if (errorMessage) setError(errorMessage);
   }
@@ -484,16 +659,16 @@ function PickModal({ item, onClose, onPick }) {
           </p>
         ) : (
           <div>
-            <label className="mb-1 block text-xs font-semibold text-ink-600/70">Lokacija</label>
+            <label className="mb-1 block text-xs font-semibold text-ink-600/70">Sandėlis / lokacija</label>
             <select
-              value={location}
-              onChange={(e) => setLocation(e.target.value)}
+              value={stockId}
+              onChange={(e) => setStockId(e.target.value)}
               className="input-field"
               required
             >
               {locations.map((s) => (
-                <option key={s.location} value={s.location}>
-                  Lokacija {s.location} ({s.quantity} vnt.)
+                <option key={s.id} value={s.id}>
+                  {s.warehouses?.name ? `${s.warehouses.name} — ` : ""}Lokacija {s.location} ({s.quantity} vnt.)
                 </option>
               ))}
             </select>

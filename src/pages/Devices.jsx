@@ -1,13 +1,13 @@
 import { Fragment, useEffect, useRef, useState } from "react";
-import { useSearchParams } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import {
   Search, Loader2, Save, Boxes, ChevronDown, ChevronUp, ChevronLeft, ChevronRight, Pencil, X,
-  PackagePlus, PackageMinus, Trash2, Download, AlertCircle, ImageIcon, ClipboardList
+  PackagePlus, PackageMinus, Trash2, Download, AlertCircle, ImageIcon, ClipboardList, ArrowRightLeft
 } from "lucide-react";
 import { supabase } from "../lib/supabaseClient";
 import { useAuth } from "../lib/AuthProvider";
 import { stockLevelRowTone, stockLevelBorderClass, stockLevelTitle } from "../lib/stockLevel";
-import { escapeLike } from "../lib/format";
+import { searchPattern } from "../lib/format";
 import { DEVICE_WRITEOFF_REASONS as WRITEOFF_REASONS } from "../lib/writeoffReasons";
 
 const PAGE_SIZE_OPTIONS = [10, 25, 50, 100];
@@ -48,6 +48,9 @@ export default function Devices() {
   const [debouncedSearch, setDebouncedSearch] = useState(() => searchParams.get("q") || "");
   const [manufacturerFilter, setManufacturerFilter] = useState("");
   const [manufacturerOptions, setManufacturerOptions] = useState([]);
+  const [warehouseFilter, setWarehouseFilter] = useState(""); // warehouses.id arba "" = visi
+  const [warehouseOptions, setWarehouseOptions] = useState([]);
+  const [warehouseFilterIds, setWarehouseFilterIds] = useState(null); // null = neapribota; kitaip — device_stock šiame sandėlyje turinčių device id sąrašas
   const [stockFilter, setStockFilter] = useState(() => {
     const v = searchParams.get("likutis");
     return v === "low" || v === "out" ? v : "all";
@@ -62,6 +65,7 @@ export default function Devices() {
   const [deletingId, setDeletingId] = useState(null);
   const [writeoffTarget, setWriteoffTarget] = useState(null); // nurašomas prietaisas (su device_stock)
   const [pickupTarget, setPickupTarget] = useState(null); // prietaisas, kuriam pridedamas atsinešimo punktas
+  const [transferTarget, setTransferTarget] = useState(null); // prietaisas, kurio kiekis perkeliamas tarp vietų
   const [writeoffHistory, setWriteoffHistory] = useState({}); // device id -> nurašymų sąrašas
   const [loadingHistoryId, setLoadingHistoryId] = useState(null);
   const [undoingId, setUndoingId] = useState(null);
@@ -92,26 +96,47 @@ export default function Devices() {
     };
   }, [stockFilter]);
 
+  // Sandėlis, lygiai kaip Likutis aukščiau, nėra tiesioginis "devices"
+  // stulpelis (jis yra device_stock.warehouse_id, vaikinėje lentelėje), tad
+  // filtras veikia tuo pačiu dviejų žingsnių principu.
+  useEffect(() => {
+    if (!warehouseFilter) {
+      setWarehouseFilterIds(null);
+      return;
+    }
+    let active = true;
+    supabase.from("device_stock").select("device_id").eq("warehouse_id", warehouseFilter).then(({ data }) => {
+      if (active) setWarehouseFilterIds([...new Set((data || []).map((r) => r.device_id))]);
+    });
+    return () => {
+      active = false;
+    };
+  }, [warehouseFilter]);
+
   function buildQuery(opts = {}) {
     let query = supabase.from("devices").select(
-      "id, ian, name, manufacturer, notes, min_quantity, device_stock(id, location, quantity)",
+      "id, ian, name, manufacturer, notes, min_quantity, device_stock(id, location, quantity, warehouse_id, warehouses(name))",
       opts.count ? { count: opts.count } : undefined
     );
 
     const tokens = debouncedSearch.trim().toLowerCase().split(/\s+/).filter(Boolean);
     tokens.forEach((token) => {
-      const q = escapeLike(token);
-      query = query.or(`name.ilike.%${q}%,ian.ilike.%${q}%,manufacturer.ilike.%${q}%`);
+      query = query.ilike("search_text", searchPattern(token));
     });
 
     if (manufacturerFilter) query = query.eq("manufacturer", manufacturerFilter);
     if (stockFilter !== "all") query = query.in("id", stockFilterIds || []);
+    // Antras nepriklausomas .in("id", ...) tam pačiam stulpeliui — PostgREST
+    // abu sujungia per AND (turi tenkinti abu apribojimus vienu metu), lygiai
+    // taip, kaip ir norima, kai pasirinkti ir Likutis, ir Sandėlis filtrai.
+    if (warehouseFilter) query = query.in("id", warehouseFilterIds || []);
 
     return query.order("name", { ascending: true });
   }
 
   async function load() {
     if (stockFilter !== "all" && stockFilterIds === null) return; // dar laukiame stock_level id sąrašo
+    if (warehouseFilter && warehouseFilterIds === null) return; // dar laukiame sandėlio id sąrašo
     setLoading(true);
     const from = page * pageSize;
     const to = from + pageSize - 1;
@@ -127,12 +152,17 @@ export default function Devices() {
     setManufacturerOptions([...set].sort());
   }
 
+  async function loadWarehouseOptions() {
+    const { data } = await supabase.from("warehouses").select("id, name").order("name");
+    setWarehouseOptions(data || []);
+  }
+
   const loadRef = useRef(load);
   useEffect(() => {
     loadRef.current = load;
   });
 
-  const filterKey = `${debouncedSearch}|${manufacturerFilter}|${stockFilter}|${(stockFilterIds || []).join(",")}|${pageSize}`;
+  const filterKey = `${debouncedSearch}|${manufacturerFilter}|${stockFilter}|${(stockFilterIds || []).join(",")}|${warehouseFilter}|${(warehouseFilterIds || []).join(",")}|${pageSize}`;
   const prevFilterKey = useRef(filterKey);
   useEffect(() => {
     if (filterKey !== prevFilterKey.current) {
@@ -153,6 +183,7 @@ export default function Devices() {
 
   useEffect(() => {
     loadManufacturerOptions();
+    loadWarehouseOptions();
     const channel = supabase
       .channel("devices-realtime")
       .on("postgres_changes", { event: "*", schema: "public", table: "devices" }, () => {
@@ -161,6 +192,9 @@ export default function Devices() {
       })
       .on("postgres_changes", { event: "*", schema: "public", table: "device_stock" }, () => {
         loadRef.current();
+      })
+      .on("postgres_changes", { event: "*", schema: "public", table: "warehouses" }, () => {
+        loadWarehouseOptions();
       })
       .on("postgres_changes", { event: "*", schema: "public", table: "device_writeoffs" }, (payload) => {
         // Perkraunama TIK pasikeitusio prietaiso istorija (jei ji šiuo metu
@@ -194,7 +228,7 @@ export default function Devices() {
     setLoadingHistoryId(deviceId);
     const { data } = await supabase
       .from("device_writeoffs")
-      .select("id, location, quantity, reason_type, price, rma, reason, created_at, undone_at, profiles!user_id(username)")
+      .select("id, location, quantity, reason_type, price, rma, reason, created_at, undone_at, warehouses(name), profiles!user_id(username)")
       .eq("device_id", deviceId)
       .order("created_at", { ascending: false });
     setWriteoffHistory((prev) => ({ ...prev, [deviceId]: data || [] }));
@@ -213,12 +247,27 @@ export default function Devices() {
     loadWriteoffHistory(deviceId);
   }
 
+  // Perkėlimas tarp vietų (transfer_device_stock RPC) — bendras kiekis
+  // nesikeičia. Grąžina klaidos tekstą, jei nepavyko (TransferModal jį rodo
+  // ir neužsidaro); sąrašas atsinaujina per device_stock realtime.
+  async function handleTransfer({ fromStockId, toWarehouseId, toLocation, quantity }) {
+    const { error } = await supabase.rpc("transfer_device_stock", {
+      p_from_stock_id: fromStockId,
+      p_to_warehouse_id: toWarehouseId,
+      p_to_location: toLocation,
+      p_quantity: quantity
+    });
+    if (error) return error.message;
+    setTransferTarget(null);
+  }
+
   // Grąžina klaidos tekstą, jei nepavyko — WriteoffModal tada rodo ją
-  // formoje ir NEUŽDARO jos.
-  async function handleWriteoff(device, { location, quantity, reasonType, price, rma, reason }) {
+  // formoje ir NEUŽDARO jos. "stockId" (device_stock.id) — vienareikšmiškai
+  // identifikuoja likutį, nes ta pati lokacija gali kartotis skirtinguose
+  // sandėliuose (žr. migrate_add_device_warehouses.sql).
+  async function handleWriteoff(device, { stockId, quantity, reasonType, price, rma, reason }) {
     const { error } = await supabase.rpc("writeoff_device", {
-      p_device_id: device.id,
-      p_location: location,
+      p_stock_id: stockId,
       p_quantity: quantity,
       p_reason_type: reasonType,
       p_price: price,
@@ -265,17 +314,65 @@ export default function Devices() {
       })
       .eq("id", deviceId);
     if (error) return error.message;
+
+    // Likučių sandėlio/lokacijos keitimas — tik pakeistos eilutės. Kiekis
+    // čia nekeičiamas (tam — nurašymas/importas). Unikalumas (device_id,
+    // warehouse_id, lokacija be raidžių dydžio/tarpų kraštuose — žr.
+    // migrate_device_stock_location_ci.sql): jei tame sandėlyje su ta pačia lokacija šis
+    // prietaisas jau turi likutį, DB atmes — eilučių nesujungiame
+    // automatiškai, nes device_pickups.picked_stock_id rodo į konkrečią eilutę.
+    for (const row of form.stock) {
+      const location = row.location.trim() || "-";
+      if (row.warehouseId === row.origWarehouseId && location === row.origLocation) continue;
+      const { error: stockError } = await supabase
+        .from("device_stock")
+        .update({ warehouse_id: row.warehouseId, location })
+        .eq("id", row.id);
+      if (stockError) {
+        return stockError.code === "23505"
+          ? `Šis prietaisas jau turi likutį tame sandėlyje su lokacija „${location}“ — pasirinkite kitą lokaciją.`
+          : `Nepavyko pakeisti likučio sandėlio/lokacijos: ${stockError.message}`;
+      }
+    }
+
     setEditingDevice(null);
   }
 
+  // "warehouseId" pasirenkamas — jei nenurodytas, prietaisas sukuriamas be
+  // jokio pradinio likučio (kaip ir importuojant be sandėlio, likutį galima
+  // pridėti vėliau per importą). Jei pasirinktas, iš karto sukuriama viena
+  // device_stock eilutė — kad naujo prietaiso neriektų iš karto siųsti per
+  // /importas vien tam, kad atsirastų pirma lokacija.
   async function handleCreateDevice(form) {
-    const { error } = await supabase.from("devices").insert({
-      name: form.name.trim() || null,
-      ian: form.ian.trim(),
-      manufacturer: form.manufacturer.trim() || null,
-      min_quantity: form.min_quantity === "" ? null : Math.max(0, Math.round(Number(form.min_quantity)) || 0)
-    });
+    const { data: device, error } = await supabase
+      .from("devices")
+      .insert({
+        name: form.name.trim() || null,
+        ian: form.ian.trim(),
+        manufacturer: form.manufacturer.trim() || null,
+        min_quantity: form.min_quantity === "" ? null : Math.max(0, Math.round(Number(form.min_quantity)) || 0)
+      })
+      .select("id")
+      .single();
     if (error) return error.message;
+
+    if (form.warehouseId) {
+      const { error: stockError } = await supabase.from("device_stock").insert({
+        device_id: device.id,
+        warehouse_id: form.warehouseId,
+        location: form.location.trim() || "-",
+        quantity: Math.max(0, Math.round(Number(form.quantity)) || 0)
+      });
+      // Prietaisas JAU sukurtas — modalas uždaromas, kad pakartotinis
+      // "Išsaugoti" nebandytų kurti to paties IAN antrą kartą (unikalumo
+      // klaida); likučio klaida rodoma puslapio lygiu.
+      if (stockError) {
+        setCreating(false);
+        setActionError(`Prietaisas sukurtas, bet nepavyko įrašyti likučio: ${stockError.message}`);
+        return;
+      }
+    }
+
     setCreating(false);
   }
 
@@ -389,10 +486,23 @@ export default function Devices() {
             <option value="out">Tik baigęsis (0)</option>
           </select>
         </label>
-        {(manufacturerFilter !== "" || stockFilter !== "all") && (
+        <label className="flex shrink-0 items-center gap-2 text-xs font-medium text-ink-600/70">
+          Sandėlis
+          <select
+            value={warehouseFilter}
+            onChange={(e) => setWarehouseFilter(e.target.value)}
+            className="input-field w-auto py-1.5 text-sm"
+          >
+            <option value="">Visi</option>
+            {warehouseOptions.map((w) => (
+              <option key={w.id} value={w.id}>{w.name}</option>
+            ))}
+          </select>
+        </label>
+        {(manufacturerFilter !== "" || stockFilter !== "all" || warehouseFilter !== "") && (
           <button
             type="button"
-            onClick={() => { setManufacturerFilter(""); setStockFilter("all"); }}
+            onClick={() => { setManufacturerFilter(""); setStockFilter("all"); setWarehouseFilter(""); }}
             className="text-xs font-medium text-ink-600/60 underline decoration-dotted hover:text-ink-900"
           >
             Išvalyti filtrus
@@ -409,7 +519,7 @@ export default function Devices() {
           <div className="flex flex-col items-center gap-2 py-10 text-center">
             <Boxes className="text-ink-600/30" size={24} />
             <p className="text-sm text-ink-600/60">
-              {totalCount === 0 && debouncedSearch.trim() === "" && manufacturerFilter === "" && stockFilter === "all"
+              {totalCount === 0 && debouncedSearch.trim() === "" && manufacturerFilter === "" && stockFilter === "all" && warehouseFilter === ""
                 ? "Prietaisų dar nėra — importuokite juos per /importas."
                 : "Pagal paiešką nieko nerasta."}
             </p>
@@ -485,6 +595,7 @@ export default function Devices() {
                               onEditDevice={() => setEditingDevice(d)}
                               onDeleteDevice={() => handleDeleteDevice(d)}
                               onWriteoffDevice={() => setWriteoffTarget(d)}
+                              onTransferDevice={() => setTransferTarget(d)}
                               writeoffHistory={writeoffHistory[d.id] || []}
                               loadingHistory={loadingHistoryId === d.id}
                               undoingId={undoingId}
@@ -559,6 +670,14 @@ export default function Devices() {
         />
       )}
 
+      {transferTarget && (
+        <TransferModal
+          device={transferTarget}
+          onClose={() => setTransferTarget(null)}
+          onSave={handleTransfer}
+        />
+      )}
+
       {pickupTarget && (
         <PickupModal
           device={pickupTarget}
@@ -572,7 +691,7 @@ export default function Devices() {
 
 function DeviceDetail({
   device, canEdit, canDelete, deletingId, onSaveNotes, onEditDevice, onDeleteDevice,
-  onWriteoffDevice, writeoffHistory, loadingHistory, undoingId, onUndoWriteoff
+  onWriteoffDevice, onTransferDevice, writeoffHistory, loadingHistory, undoingId, onUndoWriteoff
 }) {
   const stock = device.device_stock || [];
   const [notesDraft, setNotesDraft] = useState(device.notes || "");
@@ -619,6 +738,8 @@ function DeviceDetail({
               {stock.map((s) => (
                 <li key={s.id}>
                   <p className="text-sm text-ink-800">
+                    {s.warehouses?.name && <span className="font-semibold">{s.warehouses.name}</span>}
+                    {s.warehouses?.name && " — "}
                     Lokacija {s.location} ({s.quantity ?? 0} vnt.)
                   </p>
                 </li>
@@ -658,6 +779,16 @@ function DeviceDetail({
             {canEdit && (
               <button type="button" onClick={onEditDevice} className="btn-secondary">
                 <Pencil size={14} /> Redaguoti prietaisą
+              </button>
+            )}
+            {canEdit && (
+              <button
+                type="button"
+                onClick={onTransferDevice}
+                disabled={totalQuantity(device) <= 0}
+                className="btn-secondary"
+              >
+                <ArrowRightLeft size={14} /> Perkelti
               </button>
             )}
             {canDelete && (
@@ -704,7 +835,7 @@ function DeviceDetail({
                     <span>
                       <span className="font-semibold text-ink-800">-{w.quantity} vnt.</span>
                       {" · "}
-                      Lokacija {w.location}
+                      {w.warehouses?.name && `${w.warehouses.name} — `}Lokacija {w.location}
                       {" · "}
                       {new Date(w.created_at).toLocaleDateString("lt-LT")}
                       {" · "}
@@ -759,9 +890,212 @@ function DeviceDetail({
   );
 }
 
+const NEW_PLACE = "__new__";
+
+// Kiekio perkėlimas iš vienos prietaiso vietos į kitą: į esamą to paties
+// prietaiso vietą (kiekiai susideda) arba į naują (bet kuris sandėlis +
+// lokacija). Perkėlus visą kiekį į esamą vietą, dvi vietos susilieja —
+// šaltinis ištrinamas (žr. transfer_device_stock() migrate_add_device_stock_transfer.sql).
+function TransferModal({ device, onClose, onSave }) {
+  const stock = device.device_stock || [];
+  const sources = stock.filter((s) => (s.quantity ?? 0) > 0);
+  const [fromStockId, setFromStockId] = useState(sources[0]?.id || "");
+  const [quantity, setQuantity] = useState("1");
+  const [target, setTarget] = useState(NEW_PLACE); // device_stock.id arba NEW_PLACE
+  const [newWarehouseId, setNewWarehouseId] = useState("");
+  const [newLocation, setNewLocation] = useState("");
+  const [warehouses, setWarehouses] = useState(null);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  const source = sources.find((s) => s.id === fromStockId);
+  const targets = stock.filter((s) => s.id !== fromStockId);
+
+  useEffect(() => {
+    let active = true;
+    supabase.from("warehouses").select("id, name").order("name").then(({ data }) => {
+      if (!active) return;
+      const list = data || [];
+      setWarehouses(list);
+      setNewWarehouseId((prev) => prev || list[0]?.id || "");
+    });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  // Naujos vietos sandėlis numatytai — tas pats, kaip šaltinio.
+  useEffect(() => {
+    if (source?.warehouse_id) setNewWarehouseId(source.warehouse_id);
+  }, [source?.warehouse_id]);
+
+  function placeLabel(s) {
+    return `${s.warehouses?.name ? `${s.warehouses.name} — ` : ""}Lokacija ${s.location}`;
+  }
+
+  async function submit(e) {
+    e.preventDefault();
+    if (!source) {
+      setError("Pasirinkite, iš kur perkelti.");
+      return;
+    }
+    const value = Math.round(Number(quantity));
+    if (!Number.isFinite(value) || value <= 0) {
+      setError("Įveskite teigiamą kiekį.");
+      return;
+    }
+    if (value > (source.quantity ?? 0)) {
+      setError(`Negalima perkelti daugiau nei turima (${source.quantity ?? 0}).`);
+      return;
+    }
+    let toWarehouseId;
+    let toLocation;
+    if (target === NEW_PLACE) {
+      toWarehouseId = newWarehouseId;
+      toLocation = newLocation.trim();
+      if (!toWarehouseId) {
+        setError("Pasirinkite sandėlį.");
+        return;
+      }
+      if (!toLocation) {
+        setError("Įveskite lokaciją.");
+        return;
+      }
+    } else {
+      const t = stock.find((s) => s.id === target);
+      toWarehouseId = t.warehouse_id;
+      toLocation = t.location;
+    }
+    setSaving(true);
+    setError("");
+    const errorMessage = await onSave({ fromStockId, toWarehouseId, toLocation, quantity: value });
+    setSaving(false);
+    if (errorMessage) setError(errorMessage);
+  }
+
+  return (
+    <div className="fixed inset-0 z-30 flex items-end justify-center bg-ink-950/50 p-0 sm:items-center sm:p-4">
+      <form onSubmit={submit} className="max-h-[85vh] w-full max-w-md overflow-y-auto rounded-t-2xl bg-white p-5 shadow-panel sm:rounded-2xl">
+        <div className="mb-4 flex items-center justify-between">
+          <h2 className="text-base font-bold text-ink-900">Perkelti prietaisą</h2>
+          <button type="button" onClick={onClose} className="rounded-lg p-1.5 hover:bg-ink-900/5">
+            <X size={18} />
+          </button>
+        </div>
+
+        <p className="mb-3 text-sm text-ink-600/70">{device.name || device.ian}</p>
+
+        <div className="space-y-3">
+          <div>
+            <label className="mb-1 block text-xs font-semibold text-ink-600/70">Iš kur</label>
+            <select
+              value={fromStockId}
+              onChange={(e) => {
+                setFromStockId(e.target.value);
+                setQuantity("1");
+                if (target === e.target.value) setTarget(NEW_PLACE);
+              }}
+              className="input-field"
+              required
+            >
+              {sources.map((s) => (
+                <option key={s.id} value={s.id}>{placeLabel(s)} ({s.quantity ?? 0} vnt.)</option>
+              ))}
+            </select>
+          </div>
+
+          <div>
+            <label className="mb-1 block text-xs font-semibold text-ink-600/70">Kiekis</label>
+            <div className="flex items-center gap-2">
+              <input
+                type="number"
+                min={1}
+                max={source?.quantity ?? undefined}
+                value={quantity}
+                onChange={(e) => setQuantity(e.target.value)}
+                className="input-field"
+                required
+              />
+              <button
+                type="button"
+                onClick={() => setQuantity(String(source?.quantity ?? 0))}
+                className="btn-secondary shrink-0 px-2.5 py-2 text-xs"
+              >
+                Visus ({source?.quantity ?? 0})
+              </button>
+            </div>
+          </div>
+
+          <div>
+            <label className="mb-1 block text-xs font-semibold text-ink-600/70">Į kur</label>
+            <select value={target} onChange={(e) => setTarget(e.target.value)} className="input-field">
+              {targets.map((s) => (
+                <option key={s.id} value={s.id}>{placeLabel(s)} (dabar {s.quantity ?? 0} vnt.)</option>
+              ))}
+              <option value={NEW_PLACE}>+ Nauja vieta…</option>
+            </select>
+          </div>
+
+          {target === NEW_PLACE && (
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="mb-1 block text-xs font-semibold text-ink-600/70">Sandėlis</label>
+                <select
+                  value={newWarehouseId}
+                  onChange={(e) => setNewWarehouseId(e.target.value)}
+                  className="input-field"
+                  disabled={!warehouses}
+                >
+                  {(warehouses || []).map((w) => (
+                    <option key={w.id} value={w.id}>{w.name}</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="mb-1 block text-xs font-semibold text-ink-600/70">Lokacija</label>
+                <input
+                  value={newLocation}
+                  onChange={(e) => setNewLocation(e.target.value)}
+                  placeholder="pvz. A2"
+                  className="input-field"
+                />
+              </div>
+            </div>
+          )}
+
+          {source && Math.round(Number(quantity)) === (source.quantity ?? 0) && target !== NEW_PLACE && (
+            <p className="text-xs text-ink-600/60">
+              Perkeliamas visas kiekis — vieta „{placeLabel(source)}“ bus sujungta su pasirinkta ir išnyks.
+            </p>
+          )}
+        </div>
+
+        {error && (
+          <p className="mt-3 flex items-center gap-1.5 text-sm font-medium text-signal-red">
+            <AlertCircle size={16} className="shrink-0" /> {error}
+          </p>
+        )}
+
+        <div className="mt-5 flex justify-end gap-2">
+          <button type="button" onClick={onClose} className="btn-secondary">
+            Atšaukti
+          </button>
+          <button type="submit" disabled={saving || !sources.length} className="btn-primary">
+            {saving && <Loader2 size={15} className="animate-spin" />}
+            Perkelti
+          </button>
+        </div>
+      </form>
+    </div>
+  );
+}
+
 function WriteoffModal({ device, onClose, onSave }) {
   const locations = (device.device_stock || []).filter((s) => (s.quantity ?? 0) > 0);
-  const [location, setLocation] = useState(locations[0]?.location || "");
+  // "stockId" (device_stock.id), ne lokacijos tekstas — ta pati lokacija
+  // gali kartotis skirtinguose sandėliuose, tad tik id identifikuoja
+  // vienareikšmiškai, iš kurios konkrečios eilutės bus nurašoma.
+  const [stockId, setStockId] = useState(locations[0]?.id || "");
   const [quantity, setQuantity] = useState("1");
   const [reasonType, setReasonType] = useState("");
   const [price, setPrice] = useState("");
@@ -770,12 +1104,12 @@ function WriteoffModal({ device, onClose, onSave }) {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
 
-  const selectedStock = locations.find((s) => s.location === location);
+  const selectedStock = locations.find((s) => s.id === stockId);
 
   async function submit(e) {
     e.preventDefault();
-    if (!location) {
-      setError("Pasirinkite lokaciją.");
+    if (!stockId) {
+      setError("Pasirinkite sandėlį/lokaciją.");
       return;
     }
     const value = Math.round(Number(quantity));
@@ -807,7 +1141,7 @@ function WriteoffModal({ device, onClose, onSave }) {
     setSaving(true);
     setError("");
     const errorMessage = await onSave({
-      location,
+      stockId,
       quantity: value,
       reasonType,
       price: reasonType === "parduota" ? Number(price) : null,
@@ -843,16 +1177,16 @@ function WriteoffModal({ device, onClose, onSave }) {
           ) : (
             <>
               <div>
-                <label className="mb-1 block text-xs font-semibold text-ink-600/70">Lokacija</label>
+                <label className="mb-1 block text-xs font-semibold text-ink-600/70">Sandėlis / lokacija</label>
                 <select
-                  value={location}
-                  onChange={(e) => { setLocation(e.target.value); setQuantity("1"); }}
+                  value={stockId}
+                  onChange={(e) => { setStockId(e.target.value); setQuantity("1"); }}
                   className="input-field"
                   required
                 >
                   {locations.map((s) => (
-                    <option key={s.id} value={s.location}>
-                      Lokacija {s.location} ({s.quantity ?? 0} vnt.)
+                    <option key={s.id} value={s.id}>
+                      {s.warehouses?.name ? `${s.warehouses.name} — ` : ""}Lokacija {s.location} ({s.quantity ?? 0} vnt.)
                     </option>
                   ))}
                 </select>
@@ -1043,14 +1377,45 @@ function PickupModal({ device, onClose, onSave }) {
 }
 
 function DeviceFormModal({ title, initial, onClose, onSave }) {
+  // Kuriant (initial === null) — vienas nebūtinas pradinis likutis
+  // (sandėlis/lokacija/kiekis). Redaguojant — kiekvieno esamo likučio
+  // sandėlį/lokaciją galima pakeisti (form.stock), bet NE kiekį: jį keičia
+  // nurašymas/importas, kad liktų audito pėdsakas.
+  const isCreating = !initial;
   const [form, setForm] = useState({
     name: initial?.name || "",
     ian: initial?.ian || "",
     manufacturer: initial?.manufacturer || "",
-    min_quantity: initial?.min_quantity ?? ""
+    min_quantity: initial?.min_quantity ?? "",
+    warehouseId: "",
+    location: "",
+    quantity: "0",
+    stock: (initial?.device_stock || []).map((s) => ({
+      id: s.id,
+      quantity: s.quantity ?? 0,
+      warehouseId: s.warehouse_id,
+      location: s.location,
+      origWarehouseId: s.warehouse_id,
+      origLocation: s.location
+    }))
   });
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
+  const [warehouses, setWarehouses] = useState(null); // null = dar kraunama
+
+  useEffect(() => {
+    let active = true;
+    supabase.from("warehouses").select("id, name").order("name").then(({ data }) => {
+      if (active) setWarehouses(data || []);
+    });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  function updateStockRow(id, patch) {
+    setForm((prev) => ({ ...prev, stock: prev.stock.map((r) => (r.id === id ? { ...r, ...patch } : r)) }));
+  }
 
   async function submit(e) {
     e.preventDefault();
@@ -1113,6 +1478,90 @@ function DeviceFormModal({ title, initial, onClose, onSave }) {
               className="input-field"
             />
           </div>
+
+          {!isCreating && form.stock.length > 0 && (
+            <div className="space-y-3 border-t border-ink-900/5 pt-3">
+              <p className="text-xs font-semibold text-ink-600/70">Likučiai — sandėlis / lokacija</p>
+              {form.stock.map((row) => (
+                <div key={row.id} className="grid grid-cols-[1fr_1fr_auto] items-center gap-2">
+                  <select
+                    value={row.warehouseId}
+                    onChange={(e) => updateStockRow(row.id, { warehouseId: e.target.value })}
+                    className="input-field"
+                    disabled={!warehouses}
+                    aria-label="Sandėlis"
+                  >
+                    {(warehouses || []).map((w) => (
+                      <option key={w.id} value={w.id}>{w.name}</option>
+                    ))}
+                  </select>
+                  <input
+                    value={row.location}
+                    onChange={(e) => updateStockRow(row.id, { location: e.target.value })}
+                    placeholder="Lokacija"
+                    className="input-field"
+                    aria-label="Lokacija"
+                  />
+                  <span className="whitespace-nowrap text-xs text-ink-600/60">{row.quantity} vnt.</span>
+                </div>
+              ))}
+              <p className="text-[11px] text-ink-600/50">Kiekis čia nekeičiamas — tam naudokite nurašymą arba importą.</p>
+            </div>
+          )}
+
+          {isCreating && (
+            <div className="space-y-3 border-t border-ink-900/5 pt-3">
+              <p className="text-xs font-semibold text-ink-600/70">Pradinis likutis (nebūtina)</p>
+              {warehouses && warehouses.length === 0 ? (
+                <p className="flex items-center gap-1.5 text-xs font-medium text-signal-amber">
+                  <AlertCircle size={14} className="shrink-0" />
+                  Dar nesukurta nė vieno sandėlio — sukurkite{" "}
+                  <Link to="/sandeliai" className="underline decoration-dotted hover:text-signal-amber/80">/sandeliai</Link> puslapyje,
+                  jei norite iš karto įvesti likutį.
+                </p>
+              ) : (
+                <>
+                  <div>
+                    <label className="mb-1 block text-xs font-semibold text-ink-600/70">Sandėlis</label>
+                    <select
+                      value={form.warehouseId}
+                      onChange={(e) => setForm({ ...form, warehouseId: e.target.value })}
+                      className="input-field"
+                      disabled={!warehouses}
+                    >
+                      <option value="">— Nepridėti dabar —</option>
+                      {(warehouses || []).map((w) => (
+                        <option key={w.id} value={w.id}>{w.name}</option>
+                      ))}
+                    </select>
+                  </div>
+                  {form.warehouseId && (
+                    <div className="grid grid-cols-2 gap-3">
+                      <div>
+                        <label className="mb-1 block text-xs font-semibold text-ink-600/70">Lokacija</label>
+                        <input
+                          value={form.location}
+                          onChange={(e) => setForm({ ...form, location: e.target.value })}
+                          placeholder="pvz. A1"
+                          className="input-field"
+                        />
+                      </div>
+                      <div>
+                        <label className="mb-1 block text-xs font-semibold text-ink-600/70">Kiekis</label>
+                        <input
+                          type="number"
+                          min={0}
+                          value={form.quantity}
+                          onChange={(e) => setForm({ ...form, quantity: e.target.value })}
+                          className="input-field"
+                        />
+                      </div>
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+          )}
         </div>
 
         {error && (

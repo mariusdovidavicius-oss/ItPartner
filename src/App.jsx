@@ -24,6 +24,7 @@ const DeviceWriteoffs = lazy(() => import("./pages/DeviceWriteoffs"));
 const DevicePickups = lazy(() => import("./pages/DevicePickups"));
 const Stats = lazy(() => import("./pages/Stats"));
 const Import = lazy(() => import("./pages/Import"));
+const Warehouses = lazy(() => import("./pages/Warehouses"));
 
 function RouteFallback() {
   return (
@@ -60,6 +61,10 @@ export default function App() {
               nuorodos kiekvieno modulio meniu. Bendras importas (priedai/prietaisai/katalogas su pasirinkimu
               viduje) — tik adminams, žr. src/pages/Import.jsx. */}
           <Route path="/importas" element={<RequirePermission permission="admin"><Import /></RequirePermission>} />
+          {/* Sandėlių (fizinių vietų) sąrašas — peržiūra RLS lygmeniu vieša (device_stock.warehouse_id
+              nuoroda naudojama kituose moduliuose), bet PATS sąrašo tvarkymo (kūrimo/trynimo) puslapis —
+              tik adminams, kaip ir Vartotojai/Importas. */}
+          <Route path="/sandeliai" element={<RequirePermission permission="admin"><Warehouses /></RequirePermission>} />
           <Route path="/admin-reset" element={<RequirePermission permission="admin"><AdminReset /></RequirePermission>} />
         </Route>
       </Routes>

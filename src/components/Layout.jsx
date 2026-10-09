@@ -2,7 +2,7 @@ import { useMemo, useState } from "react";
 import { NavLink, Outlet, useLocation } from "react-router-dom";
 import {
   ScanLine, Boxes, ChevronDown, Wrench, PackageMinus, BarChart3, Users, LogOut, Cpu, FileUp,
-  ClipboardList, MoreHorizontal, X
+  ClipboardList, MoreHorizontal, X, Warehouse
 } from "lucide-react";
 import { useAuth } from "../lib/AuthProvider";
 import InlineLoginForm from "./InlineLoginForm";
@@ -265,6 +265,7 @@ export default function Layout() {
     if (!isAdmin) return groups;
     return [...groups, { label: "Admin", items: [
       { to: "/importas", label: "Importas", icon: FileUp },
+      { to: "/sandeliai", label: "Sandėliai", icon: Warehouse },
       { to: "/priedai/vartotojai", label: "Vartotojai", icon: Users }
     ] }];
   }, [isAdmin, canSeeWriteoffs, canSeeDevicePickups, canSeeDeviceWriteoffs, canSeeStats]);
