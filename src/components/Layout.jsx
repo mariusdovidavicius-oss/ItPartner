@@ -1,12 +1,13 @@
 import { useMemo, useState } from "react";
-import { NavLink, Outlet, useLocation } from "react-router-dom";
+import { Link, NavLink, Outlet, useLocation } from "react-router-dom";
 import {
   ScanLine, Boxes, ChevronDown, Wrench, PackageMinus, BarChart3, Users, LogOut, Cpu, FileUp,
-  ClipboardList, MoreHorizontal, X, Warehouse
+  ClipboardList, MoreHorizontal, X, Warehouse, ListTodo
 } from "lucide-react";
 import { useAuth } from "../lib/AuthProvider";
 import InlineLoginForm from "./InlineLoginForm";
 import EnvBanner from "./EnvBanner";
+import { useTaskCounts } from "../lib/tasks";
 
 // Pilno pločio juosta virš viso puslapio (virš šoninio meniu ir turinio) —
 // visada matomas, nuolatinis prisijungimo/atsijungimo taškas nepriklausomai
@@ -15,10 +16,31 @@ import EnvBanner from "./EnvBanner";
 // vienintelis prisijungimo įėjimo taškas visai programai.
 function TopBar() {
   const { user, profile, isAdmin, signOut } = useAuth();
+  // Darbų sąrašas kol kas tik adminui (žr. App.jsx /darbai)
+  const taskCounts = useTaskCounts(isAdmin ? user?.id : null);
   return (
     <div className="flex flex-wrap items-center justify-end gap-2 border-b border-white/10 bg-ink-950 px-4 py-2">
       {user ? (
         <div className="flex items-center gap-3">
+          {/* Neatliktų darbų ženkliukas — raudonas, kai kas nors vėluoja */}
+          {isAdmin && (
+            <Link
+              to="/darbai"
+              className={`flex items-center gap-1.5 rounded-lg px-2 py-1 text-xs font-semibold transition ${
+                taskCounts.overdue > 0
+                  ? "bg-signal-red text-white hover:bg-signal-red/90"
+                  : "text-white/70 hover:bg-white/5 hover:text-white"
+              }`}
+            >
+              <ListTodo size={13} />
+              Darbai
+              {taskCounts.open > 0 && (
+                <span className={`rounded-full px-1.5 text-[11px] leading-4 ${taskCounts.overdue > 0 ? "bg-white/25" : "bg-signal-orange text-white"}`}>
+                  {taskCounts.open}
+                </span>
+              )}
+            </Link>
+          )}
           <span className="text-xs font-medium text-white/70">
             {profile?.username || "…"}{isAdmin && " · admin"}
           </span>
@@ -65,7 +87,7 @@ const BASE_NAV_GROUPS = [
 // "Daugiau" likusiems — visų meniu punktų dabar iki ~10 (priklausomai nuo
 // teisių), o sugrūdus juos visus į vieną eilutę telefone ikonos taptų per
 // mažos patogiai paspausti pirštu.
-const MOBILE_PRIORITY_PATHS = ["/", "/prietaisai", "/prietaisai/atsinesimai", "/priedai"];
+const MOBILE_PRIORITY_PATHS = ["/", "/darbai", "/prietaisai", "/prietaisai/atsinesimai", "/priedai"];
 
 function isItemActive(item, pathname) {
   return item.end ? pathname === item.to : pathname === item.to || pathname.startsWith(`${item.to}/`);
@@ -258,6 +280,12 @@ export default function Layout() {
     // Vienas bendras statistikos puslapis visam projektui (priedai + prietaisai,
     // perjungiama pačiame Stats.jsx) — sąmoningai atskira grupė meniu apačioje,
     // prieš "Admin", ne įterpta į konkretaus modulio grupę.
+    // Asmeninis darbų sąrašas — kol kas tik adminui (vėliau ir kolegoms;
+    // patys darbai vis tiek privatūs kiekvienam, žr. migrate_add_tasks.sql).
+    if (isAdmin) {
+      groups = [{ label: "Darbai", items: [{ to: "/darbai", label: "Darbai", icon: ListTodo }] }, ...groups];
+    }
+
     if (canSeeStats) {
       groups = [...groups, { label: "Statistika", items: [{ to: "/statistika", label: "Statistika", icon: BarChart3 }] }];
     }

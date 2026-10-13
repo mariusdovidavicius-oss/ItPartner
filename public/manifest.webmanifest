@@ -1,0 +1,15 @@
+{
+  "name": "IT Partner — Sandėlio valdymas",
+  "short_name": "IT Partner",
+  "description": "Sandėlio valdymas ir darbų sąrašas",
+  "lang": "lt",
+  "start_url": "/darbai",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#F6F7FA",
+  "theme_color": "#0E1220",
+  "icons": [
+    { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" }
+  ]
+}

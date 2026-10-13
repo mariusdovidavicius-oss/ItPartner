@@ -25,6 +25,7 @@ const DevicePickups = lazy(() => import("./pages/DevicePickups"));
 const Stats = lazy(() => import("./pages/Stats"));
 const Import = lazy(() => import("./pages/Import"));
 const Warehouses = lazy(() => import("./pages/Warehouses"));
+const Tasks = lazy(() => import("./pages/Tasks"));
 
 function RouteFallback() {
   return (
@@ -65,6 +66,8 @@ export default function App() {
               nuoroda naudojama kituose moduliuose), bet PATS sąrašo tvarkymo (kūrimo/trynimo) puslapis —
               tik adminams, kaip ir Vartotojai/Importas. */}
           <Route path="/sandeliai" element={<RequirePermission permission="admin"><Warehouses /></RequirePermission>} />
+          {/* Asmeninis darbų sąrašas — kol kas tik adminui; kiekvienas mato tik savo darbus (RLS) */}
+          <Route path="/darbai" element={<RequirePermission permission="admin"><Tasks /></RequirePermission>} />
           <Route path="/admin-reset" element={<RequirePermission permission="admin"><AdminReset /></RequirePermission>} />
         </Route>
       </Routes>
