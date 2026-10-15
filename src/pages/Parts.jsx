@@ -1665,8 +1665,12 @@ function PartTransferModal({ part, onClose, onSave }) {
 // Kuriant (initial === null) — priedas + pirma vieta (sandėlis/lokacija/
 // kiekis). Redaguojant — katalogo laukai + kiekvienos vietos sandėlis/
 // lokacija, tuščios (0 vnt.) vietos pašalinimas ir naujų vietų pridėjimas.
-// "Paruošti išsiuntimui" — sukuria darbą (tasks), priskirtą sandėlininkui
-// (adminui). Likutis NEnurašomas — tai daroma atskirai, atkrovus.
+// Kam išsiuntimo darbas skiriamas pagal nutylėjimą (sandėlininkas).
+const DEFAULT_SHIP_ASSIGNEE = "marius";
+
+// "Paruošti išsiuntimui" — sukuria darbą (tasks), priskirtą pasirinktam
+// darbuotojui (su darbų moduliu, žr. task_assignees). Likutis NEnurašomas —
+// tai daroma užbaigiant darbą.
 function ShipTaskModal({ part, onClose, onSave }) {
   const total = totalQuantity(part);
   const [quantity, setQuantity] = useState("1");
@@ -1681,7 +1685,10 @@ function ShipTaskModal({ part, onClose, onSave }) {
   useEffect(() => {
     supabase.rpc("task_assignees").then(({ data, error: rpcError }) => {
       if (rpcError) setError(`Nepavyko įkelti gavėjų: ${rpcError.message}`);
-      const list = data || [];
+      // Numatytasis gavėjas (sandėlininkas) — sąrašo viršuje ir pažymėtas.
+      const list = [...(data || [])].sort(
+        (a, b) => (b.username === DEFAULT_SHIP_ASSIGNEE) - (a.username === DEFAULT_SHIP_ASSIGNEE)
+      );
       setAssignees(list);
       setAssigneeId(list[0]?.id || "");
     });
@@ -1784,9 +1791,9 @@ function ShipTaskModal({ part, onClose, onSave }) {
               className="input-field resize-none"
             />
           </div>
-          {assignees?.length > 1 && (
+          {assignees?.length > 0 && (
             <div>
-              <label className="mb-1 block text-xs font-semibold text-ink-600/70">Kam</label>
+              <label className="mb-1 block text-xs font-semibold text-ink-600/70">Kam (darbuotojas)</label>
               <select value={assigneeId} onChange={(e) => setAssigneeId(e.target.value)} className="input-field">
                 {assignees.map((a) => (
                   <option key={a.id} value={a.id}>{a.username}</option>
@@ -1795,11 +1802,8 @@ function ShipTaskModal({ part, onClose, onSave }) {
             </div>
           )}
           {assignees?.length === 0 && !error && (
-            <p className="text-xs font-medium text-signal-red">Nėra kam priskirti darbo — reikia bent vieno administratoriaus.</p>
-          )}
-          {assignees?.length === 1 && (
-            <p className="text-xs text-ink-600/60">
-              Darbas atsiras: <span className="font-semibold text-ink-800">{assignees[0].username}</span>
+            <p className="text-xs font-medium text-signal-red">
+              Nėra kam priskirti darbo — vartotojų puslapyje pažymėkite „Darbai“ bent vienam darbuotojui.
             </p>
           )}
           {error && (

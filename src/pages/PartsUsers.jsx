@@ -19,6 +19,7 @@ function setsEqual(a, b) {
 function draftFromUser(u) {
   return {
     is_admin: u.is_admin,
+    tasks_enabled: !!u.tasks_enabled,
     permissions: new Set(u.permissions),
     palletPermissions: new Set(u.palletPermissions),
     devicePermissions: new Set(u.devicePermissions)
@@ -29,6 +30,7 @@ function isDraftDirty(user, draft) {
   if (!draft) return false;
   return (
     draft.is_admin !== user.is_admin ||
+    draft.tasks_enabled !== !!user.tasks_enabled ||
     !setsEqual(draft.permissions, user.permissions) ||
     !setsEqual(draft.palletPermissions, user.palletPermissions) ||
     !setsEqual(draft.devicePermissions, user.devicePermissions)
@@ -55,7 +57,7 @@ export default function PartsUsers() {
   async function load() {
     setLoading(true);
     const [{ data: profiles }, { data: perms }, { data: palletPerms }, { data: devicePerms }] = await Promise.all([
-      supabase.from("profiles").select("id, username, is_admin").order("username"),
+      supabase.from("profiles").select("id, username, is_admin, tasks_enabled").order("username"),
       supabase.from("user_permissions").select("user_id, permission"),
       supabase.from("pallet_permissions").select("user_id, permission"),
       supabase.from("device_permissions").select("user_id, permission")
@@ -100,11 +102,12 @@ export default function PartsUsers() {
     });
   }
 
-  function setDraftAdmin(userId, checked) {
+  // Paprasti taip/ne laukai profiles lentelėje: is_admin, tasks_enabled.
+  function setDraftFlag(userId, flag, checked) {
     setDrafts((prev) => {
       const user = users.find((u) => u.id === userId);
       const base = prev[userId] || draftFromUser(user);
-      return { ...prev, [userId]: { ...base, is_admin: checked } };
+      return { ...prev, [userId]: { ...base, [flag]: checked } };
     });
   }
 
@@ -139,8 +142,10 @@ export default function PartsUsers() {
         ...diffPermissionTasks(user.id, "pallet_permissions", user.palletPermissions, draft.palletPermissions),
         ...diffPermissionTasks(user.id, "device_permissions", user.devicePermissions, draft.devicePermissions)
       );
-      if (draft.is_admin !== user.is_admin) {
-        tasks.push(supabase.from("profiles").update({ is_admin: draft.is_admin }).eq("id", user.id));
+      if (draft.is_admin !== user.is_admin || draft.tasks_enabled !== user.tasks_enabled) {
+        tasks.push(
+          supabase.from("profiles").update({ is_admin: draft.is_admin, tasks_enabled: draft.tasks_enabled }).eq("id", user.id)
+        );
       }
     }
 
@@ -246,6 +251,7 @@ export default function PartsUsers() {
                       {p.label} <span className="normal-case font-normal">(prietaisai)</span>
                     </th>
                   ))}
+                  <th className="px-3 py-2.5 text-center font-semibold">Darbai</th>
                   <th className="px-3 py-2.5 text-center font-semibold">Admin</th>
                   <th className="w-0 px-3 py-2.5"></th>
                 </tr>
@@ -298,9 +304,19 @@ export default function PartsUsers() {
                       <td className="px-3 py-2.5 text-center">
                         <input
                           type="checkbox"
+                          checked={effective.is_admin || !!effective.tasks_enabled}
+                          disabled={effective.is_admin || saving}
+                          onChange={(e) => setDraftFlag(u.id, "tasks_enabled", e.target.checked)}
+                          className="h-4 w-4 rounded border-ink-700/30 text-signal-orange focus:ring-signal-orange/30 disabled:opacity-40"
+                          title="Darbų modulis (/darbai); tik jiems galima priskirti išsiuntimą"
+                        />
+                      </td>
+                      <td className="px-3 py-2.5 text-center">
+                        <input
+                          type="checkbox"
                           checked={effective.is_admin}
                           disabled={saving || u.id === currentUser?.id}
-                          onChange={(e) => setDraftAdmin(u.id, e.target.checked)}
+                          onChange={(e) => setDraftFlag(u.id, "is_admin", e.target.checked)}
                           className="h-4 w-4 rounded border-ink-700/30 text-signal-orange focus:ring-signal-orange/30 disabled:opacity-40"
                           title={u.id === currentUser?.id ? "Negalite atimti savo admin teisės" : undefined}
                         />
@@ -398,6 +414,7 @@ function CreateUserModal({ accessToken, onClose, onCreated }) {
   const [palletPermissions, setPalletPermissions] = useState(new Set());
   const [devicePermissions, setDevicePermissions] = useState(new Set());
   const [isAdmin, setIsAdmin] = useState(false);
+  const [tasksEnabled, setTasksEnabled] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
   const [done, setDone] = useState(false);
@@ -449,6 +466,7 @@ function CreateUserModal({ accessToken, onClose, onCreated }) {
           permissions: [...permissions],
           palletPermissions: [...palletPermissions],
           devicePermissions: [...devicePermissions],
+          tasksEnabled,
           isAdmin
         })
       });
@@ -581,6 +599,16 @@ function CreateUserModal({ accessToken, onClose, onCreated }) {
               ))}
             </div>
           </div>
+          <label className="flex items-center gap-2 text-sm text-ink-700">
+            <input
+              type="checkbox"
+              checked={isAdmin || tasksEnabled}
+              disabled={isAdmin}
+              onChange={(e) => setTasksEnabled(e.target.checked)}
+              className="h-4 w-4 rounded border-ink-700/30 text-signal-orange focus:ring-signal-orange/30"
+            />
+            Darbų modulis (/darbai) — galima priskirti išsiuntimus
+          </label>
           <label className="flex items-center gap-2 text-sm font-medium text-ink-800">
             <input
               type="checkbox"

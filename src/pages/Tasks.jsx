@@ -17,8 +17,8 @@ import { formatDate } from "../lib/format";
 import { getPushState, enablePush, disablePush, resyncPush, sendPush, needsHomeScreenInstall } from "../lib/push";
 
 // Darbų sąrašas — asmeniniai priminimai vietoj lipnių lapelių. Matomas tik
-// prisijungusiam savininkui (RLS, žr. supabase/migrate_add_tasks.sql); kol kas
-// pats puslapis — tik adminui (App.jsx /darbai, Layout.jsx meniu).
+// prisijungusiam savininkui (RLS, žr. supabase/migrate_add_tasks.sql); pats
+// puslapis — adminui ir vartotojams su profiles.tasks_enabled (App.jsx /darbai).
 // Pritaikyta telefonui: dideli varnelių mygtukai, Enter prideda darbą,
 // kortelės tempiamos už rankenėlės (ne už visos kortelės — kitaip telefone
 // slinkimas pirštu pradėtų tempimą).
@@ -940,11 +940,12 @@ export default function Tasks() {
   }
 
   // Kas sukūrė man priskirtą darbą ("Nuo: …"). tasks.created_by rodo į
-  // auth.users, ne profiles, todėl vardai pakraunami atskirai.
+  // auth.users, ne profiles, o ne adminas kitų profilių nemato — vardai per
+  // task_people_names (tik su manimi susijusių darbų žmonės).
   async function loadNames(tasks) {
     const ids = [...new Set(tasks.map((t) => t.created_by).filter((id) => id !== user.id))];
     if (!ids.length) return;
-    const { data } = await supabase.from("profiles").select("id, username").in("id", ids);
+    const { data } = await supabase.rpc("task_people_names", { p_ids: ids });
     setNames(Object.fromEntries((data || []).map((p) => [p.id, p.username])));
   }
 

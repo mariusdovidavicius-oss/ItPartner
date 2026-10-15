@@ -17,7 +17,7 @@ export function AuthProvider({ children }) {
   const loadProfile = useCallback(async (userId) => {
     setLoadingProfile(true);
     const [{ data: profileRow }, { data: permRows }, { data: palletPermRows }, { data: devicePermRows }] = await Promise.all([
-      supabase.from("profiles").select("id, username, is_admin").eq("id", userId).maybeSingle(),
+      supabase.from("profiles").select("id, username, is_admin, tasks_enabled").eq("id", userId).maybeSingle(),
       supabase.from("user_permissions").select("permission").eq("user_id", userId),
       supabase.from("pallet_permissions").select("permission").eq("user_id", userId),
       supabase.from("device_permissions").select("permission").eq("user_id", userId)
@@ -82,6 +82,8 @@ export function AuthProvider({ children }) {
     palletPermissions,
     devicePermissions,
     isAdmin: !!profile?.is_admin,
+    // Darbų modulis (/darbai) — adminui visada, kitiems pažymėjus vartotojų puslapyje.
+    canUseTasks: !!profile?.is_admin || !!profile?.tasks_enabled,
     hasPermission,
     hasPalletPermission,
     hasDevicePermission,

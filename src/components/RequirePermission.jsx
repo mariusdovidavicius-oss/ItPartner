@@ -11,8 +11,9 @@ import InlineLoginForm from "./InlineLoginForm";
 // faktiškai patikrina tik is_admin. Neprisijungusiam vartotojui rodoma
 // prisijungimo forma tiesiog čia, tame pačiame puslapyje — be
 // peradresavimo į atskirą /login maršrutą.
-export default function RequirePermission({ permission, palletPermission, devicePermission, children }) {
-  const { user, loading, hasPermission, hasPalletPermission, hasDevicePermission } = useAuth();
+// "tasks" — darbų modulis (/darbai): adminas arba profiles.tasks_enabled.
+export default function RequirePermission({ permission, palletPermission, devicePermission, tasks, children }) {
+  const { user, loading, hasPermission, hasPalletPermission, hasDevicePermission, canUseTasks } = useAuth();
 
   if (loading) {
     return (
@@ -40,6 +41,15 @@ export default function RequirePermission({ permission, palletPermission, device
   }
 
   if (palletPermission && !hasPalletPermission(palletPermission)) {
+    return (
+      <div className="flex flex-col items-center gap-2 py-20 text-center text-ink-600/60">
+        <ShieldAlert size={22} className="text-ink-600/30" />
+        <p className="text-sm font-medium">Neturite teisės pasiekti šį puslapį.</p>
+      </div>
+    );
+  }
+
+  if (tasks && !canUseTasks) {
     return (
       <div className="flex flex-col items-center gap-2 py-20 text-center text-ink-600/60">
         <ShieldAlert size={22} className="text-ink-600/30" />

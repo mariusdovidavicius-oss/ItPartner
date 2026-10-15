@@ -67,7 +67,7 @@ export default function App() {
               tik adminams, kaip ir Vartotojai/Importas. */}
           <Route path="/sandeliai" element={<RequirePermission permission="admin"><Warehouses /></RequirePermission>} />
           {/* Asmeninis darbų sąrašas — kol kas tik adminui; kiekvienas mato tik savo darbus (RLS) */}
-          <Route path="/darbai" element={<RequirePermission permission="admin"><Tasks /></RequirePermission>} />
+          <Route path="/darbai" element={<RequirePermission tasks><Tasks /></RequirePermission>} />
           <Route path="/admin-reset" element={<RequirePermission permission="admin"><AdminReset /></RequirePermission>} />
         </Route>
       </Routes>

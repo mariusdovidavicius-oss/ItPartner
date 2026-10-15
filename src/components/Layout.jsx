@@ -15,15 +15,15 @@ import { useTaskCounts } from "../lib/tasks";
 // reikalingas tik daliai funkcijų (priedų modulis), ši juosta veikia kaip
 // vienintelis prisijungimo įėjimo taškas visai programai.
 function TopBar() {
-  const { user, profile, isAdmin, signOut } = useAuth();
-  // Darbų sąrašas kol kas tik adminui (žr. App.jsx /darbai)
-  const taskCounts = useTaskCounts(isAdmin ? user?.id : null);
+  const { user, profile, isAdmin, canUseTasks, signOut } = useAuth();
+  // Darbų sąrašas — adminui ir pažymėtiems vartotojams (žr. App.jsx /darbai)
+  const taskCounts = useTaskCounts(canUseTasks ? user?.id : null);
   return (
     <div className="flex flex-wrap items-center justify-end gap-2 border-b border-white/10 bg-ink-950 px-4 py-2">
       {user ? (
         <div className="flex items-center gap-3">
           {/* Neatliktų darbų ženkliukas — raudonas, kai kas nors vėluoja */}
-          {isAdmin && (
+          {canUseTasks && (
             <Link
               to="/darbai"
               className={`flex items-center gap-1.5 rounded-lg px-2 py-1 text-xs font-semibold transition ${
@@ -252,7 +252,7 @@ function MoreMenuSheet({ groups, onClose }) {
 }
 
 export default function Layout() {
-  const { user, profile, isAdmin, signOut, hasPermission, hasDevicePermission } = useAuth();
+  const { user, profile, isAdmin, canUseTasks, signOut, hasPermission, hasDevicePermission } = useAuth();
   const canSeeWriteoffs = hasPermission("delete");
   const canSeeDeviceWriteoffs = hasDevicePermission("delete");
   const canSeeDevicePickups = hasDevicePermission("edit");
@@ -280,9 +280,9 @@ export default function Layout() {
     // Vienas bendras statistikos puslapis visam projektui (priedai + prietaisai,
     // perjungiama pačiame Stats.jsx) — sąmoningai atskira grupė meniu apačioje,
     // prieš "Admin", ne įterpta į konkretaus modulio grupę.
-    // Asmeninis darbų sąrašas — kol kas tik adminui (vėliau ir kolegoms;
-    // patys darbai vis tiek privatūs kiekvienam, žr. migrate_add_tasks.sql).
-    if (isAdmin) {
+    // Asmeninis darbų sąrašas — adminui ir vartotojams su darbų moduliu
+    // (profiles.tasks_enabled); patys darbai privatūs kiekvienam.
+    if (canUseTasks) {
       groups = [{ label: "Darbai", items: [{ to: "/darbai", label: "Darbai", icon: ListTodo }] }, ...groups];
     }
 
@@ -296,7 +296,7 @@ export default function Layout() {
       { to: "/sandeliai", label: "Sandėliai", icon: Warehouse },
       { to: "/priedai/vartotojai", label: "Vartotojai", icon: Users }
     ] }];
-  }, [isAdmin, canSeeWriteoffs, canSeeDevicePickups, canSeeDeviceWriteoffs, canSeeStats]);
+  }, [isAdmin, canUseTasks, canSeeWriteoffs, canSeeDevicePickups, canSeeDeviceWriteoffs, canSeeStats]);
 
   return (
     <div className="flex min-h-screen flex-col bg-paper">
