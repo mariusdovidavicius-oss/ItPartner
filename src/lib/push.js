@@ -58,6 +58,18 @@ export async function enablePush() {
   const sub =
     (await reg.pushManager.getSubscription()) ||
     (await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: urlBase64ToUint8Array(VAPID_PUBLIC_KEY) }));
+  await saveSubscription(sub);
+}
+
+// Naršyklė gali prenumeruoti, o DB įrašo nebūti (nepavykęs įrašymas, kitas
+// vartotojas tame pačiame kompiuteryje) — tada serveris neturėtų kur siųsti.
+// Kviečiama atidarius /darbai, kai pranešimai įjungti: įrašas atnaujinamas.
+export async function resyncPush() {
+  const sub = await currentSubscription();
+  if (sub && Notification.permission === "granted") await saveSubscription(sub);
+}
+
+async function saveSubscription(sub) {
   const json = sub.toJSON();
   const { error } = await supabase.rpc("save_push_subscription", {
     p_endpoint: json.endpoint,

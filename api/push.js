@@ -88,6 +88,7 @@ export default async function handler(req, res) {
 
   let sent = 0;
   const expired = [];
+  const errors = []; // grąžinama klientui — "Bandomasis" parodo priežastį
   await Promise.all(
     (subs || []).map(async (s) => {
       try {
@@ -101,10 +102,11 @@ export default async function handler(req, res) {
         // 404/410 — naršyklė prenumeratą atšaukė (išvalyti duomenys, kitas įrenginys ir pan.).
         if (err.statusCode === 404 || err.statusCode === 410) expired.push(s.id);
         else console.error("push failed", err.statusCode, err.body);
+        errors.push(`${new URL(s.endpoint).host}: ${err.statusCode || ""} ${String(err.body || err.message).slice(0, 120)}`.trim());
       }
     })
   );
   if (expired.length) await supabaseAdmin.from("push_subscriptions").delete().in("id", expired);
 
-  res.status(200).json({ sent, subscriptions: (subs || []).length });
+  res.status(200).json({ sent, subscriptions: (subs || []).length, errors });
 }

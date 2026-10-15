@@ -14,7 +14,7 @@ import { supabase } from "../lib/supabaseClient";
 import { useAuth } from "../lib/AuthProvider";
 import { localDateStr, addDaysStr, daysUntil, formatDue } from "../lib/tasks";
 import { formatDate } from "../lib/format";
-import { getPushState, enablePush, disablePush, sendPush, needsHomeScreenInstall } from "../lib/push";
+import { getPushState, enablePush, disablePush, resyncPush, sendPush, needsHomeScreenInstall } from "../lib/push";
 
 // Darbų sąrašas — asmeniniai priminimai vietoj lipnių lapelių. Matomas tik
 // prisijungusiam savininkui (RLS, žr. supabase/migrate_add_tasks.sql); kol kas
@@ -832,7 +832,12 @@ function PushToggle() {
   const [message, setMessage] = useState("");
 
   useEffect(() => {
-    getPushState().then(setState).catch(() => setState("unsupported"));
+    getPushState()
+      .then((s) => {
+        setState(s);
+        if (s === "on") resyncPush().catch((err) => setMessage(`Prenumeratos įrašyti nepavyko: ${err.message}`));
+      })
+      .catch(() => setState("unsupported"));
   }, []);
 
   async function run(action) {
@@ -848,8 +853,12 @@ function PushToggle() {
   }
 
   async function test() {
-    const { sent } = await sendPush({ test: true });
-    setMessage(sent ? "Bandomasis pranešimas išsiųstas." : "Šiam įrenginiui pranešimas neišsiųstas.");
+    // Prieš bandymą — prenumerata dar kartą įrašoma į DB (jei jos ten nebuvo).
+    await resyncPush();
+    const { sent, subscriptions, errors } = await sendPush({ test: true });
+    if (sent) setMessage(`Bandomasis pranešimas išsiųstas (įrenginių: ${sent}).`);
+    else if (!subscriptions) setMessage("Serveris nerado nė vienos šio vartotojo prenumeratos.");
+    else setMessage(`Pranešimų tarnyba atmetė (${subscriptions} prenum.): ${(errors || []).join("; ") || "nežinoma klaida"}`);
   }
 
   if (state === null) return null;
