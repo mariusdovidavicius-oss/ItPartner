@@ -3,14 +3,16 @@ import { useSearchParams } from "react-router-dom";
 import {
   Search, Loader2, Save, Boxes, Minus, Plus, ChevronLeft, ChevronRight,
   ChevronDown, ChevronUp, ImageIcon, Pencil, X, PackagePlus, PackageMinus, Trash2, Download, AlertCircle,
-  ArrowRightLeft
+  ArrowRightLeft, Send, CheckCircle2, Clock
 } from "lucide-react";
 import { supabase } from "../lib/supabaseClient";
 import { useAuth } from "../lib/AuthProvider";
 import { stockLevelRowTone, stockLevelBorderClass, stockLevelTitle } from "../lib/stockLevel";
-import { searchPattern } from "../lib/format";
+import { searchPattern, formatDate } from "../lib/format";
 import { fetchAllRows } from "../lib/fetchAll";
 import { PART_WRITEOFF_REASONS as WRITEOFF_REASONS } from "../lib/writeoffReasons";
+import { localDateStr } from "../lib/tasks";
+import { sendPush } from "../lib/push";
 
 const PAGE_SIZE_OPTIONS = [10, 25, 50, 100];
 const HISTORY_PAGE_SIZE = 5; // po kiek nurašymų istorijos įrašų rodoma iš karto (žr. "Rodyti daugiau")
@@ -93,6 +95,8 @@ export default function Parts() {
   const [deletingId, setDeletingId] = useState(null);
   const [writeoffPart, setWriteoffPart] = useState(null);
   const [transferPart, setTransferPart] = useState(null);
+  const [shipPart, setShipPart] = useState(null);
+  const [shipTasks, setShipTasks] = useState({}); // part id -> šio vartotojo išsiuntimo darbai
   const [writeoffHistory, setWriteoffHistory] = useState({}); // part id -> nurašymų sąrašas
   const [loadingHistoryId, setLoadingHistoryId] = useState(null);
   const [undoingId, setUndoingId] = useState(null);
@@ -268,6 +272,7 @@ export default function Parts() {
   }, [totalCount, pageSize]);
 
   function toggleExpand(id) {
+    const expanding = !expandedIds.has(id);
     setExpandedIds((prev) => {
       const next = new Set(prev);
       if (next.has(id)) next.delete(id);
@@ -275,6 +280,40 @@ export default function Parts() {
       return next;
     });
     if (canDelete && !(id in writeoffHistory)) loadWriteoffHistory(id);
+    // Kiekvieną kartą išskleidus — būsena ("Laukia"/"Paruošta") galėjo pasikeisti.
+    if (user && expanding) loadShipTasks(id);
+  }
+
+  // Išsiuntimo darbai šiam priedui — RLS grąžina tik paties sukurtus arba
+  // jam priskirtus, todėl vadybininkė mato savo pažymėtų būseną.
+  async function loadShipTasks(partId) {
+    const { data } = await supabase
+      .from("tasks")
+      .select("id, quantity, order_ref, done, done_at, created_at")
+      .eq("part_id", partId)
+      .order("created_at", { ascending: false })
+      .limit(5);
+    setShipTasks((prev) => ({ ...prev, [partId]: data || [] }));
+  }
+
+  // Grąžina klaidos tekstą, jei nepavyko (ShipTaskModal jį rodo formoje).
+  async function handleCreateShipTask(part, { quantity, orderRef, unitPrice, note, assigneeId }) {
+    const { data: created, error } = await supabase.from("tasks").insert({
+      title: `Paruošti išsiuntimui: ${part.name || part.part_code}`,
+      note: note || null,
+      due_date: localDateStr(),
+      starred: true, // užsakymas laukia — visada ⭐ (sąrašo viršuje)
+      part_id: part.id,
+      quantity,
+      order_ref: orderRef || null,
+      unit_price: unitPrice,
+      assigned_to: assigneeId,
+      created_by: user.id
+    }).select("id").single();
+    if (error) return error.message;
+    sendPush({ taskId: created.id }).catch(() => {}); // pranešimas sandėlininkui — nepavykus darbas vis tiek sukurtas
+    setShipPart(null);
+    loadShipTasks(part.id);
   }
 
   async function loadWriteoffHistory(partId) {
@@ -785,6 +824,9 @@ export default function Parts() {
                               onSaveField={(patch, label) => handleSavePartField(p, patch, label)}
                               onEdit={() => setEditingPart(p)}
                               onTransfer={() => setTransferPart(p)}
+                              canShip={!!user}
+                              shipTasks={shipTasks[p.id] || []}
+                              onShip={() => setShipPart(p)}
                               onWriteoff={() => setWriteoffPart(p)}
                               onDelete={() => handleDelete(p)}
                               writeoffHistory={writeoffHistory[p.id] || []}
@@ -870,6 +912,14 @@ export default function Parts() {
           onSave={handleTransfer}
         />
       )}
+
+      {shipPart && (
+        <ShipTaskModal
+          part={shipPart}
+          onClose={() => setShipPart(null)}
+          onSave={(form) => handleCreateShipTask(shipPart, form)}
+        />
+      )}
     </div>
   );
 }
@@ -933,7 +983,7 @@ function QuantityEditor({ stock, draft, saving, onDraft, onStep, onSave }) {
 
 function PartDetail({
   part, canEdit, canDelete, deletingId, quantityEditorProps, onSaveField, onEdit, onTransfer, onWriteoff, onDelete,
-  writeoffHistory, loadingHistory, undoingId, onUndoWriteoff
+  canShip, shipTasks, onShip, writeoffHistory, loadingHistory, undoingId, onUndoWriteoff
 }) {
   const stock = part.part_stock || [];
   const total = totalQuantity(part);
@@ -1074,6 +1124,34 @@ function PartDetail({
             <p className="whitespace-pre-line text-sm text-ink-800">{part.notes || "—"}</p>
           )}
         </div>
+
+        {canShip && (
+          <div>
+            <button type="button" onClick={onShip} className="btn-secondary border-signal-blue/30 text-signal-blue hover:bg-signal-blue/10">
+              <Send size={14} /> Paruošti išsiuntimui
+            </button>
+            {shipTasks.length > 0 && (
+              <ul className="mt-2 space-y-1">
+                {shipTasks.map((t) => (
+                  <li key={t.id} className="flex flex-wrap items-center gap-1.5 text-xs text-ink-600/80">
+                    {t.done ? (
+                      <span className="inline-flex items-center gap-1 rounded-full bg-signal-teal/10 px-2 py-0.5 font-semibold text-signal-teal">
+                        <CheckCircle2 size={12} /> Paruošta {formatDate(t.done_at)}
+                      </span>
+                    ) : (
+                      <span className="inline-flex items-center gap-1 rounded-full bg-signal-orange/10 px-2 py-0.5 font-semibold text-signal-orange">
+                        <Clock size={12} /> Laukia
+                      </span>
+                    )}
+                    <span>
+                      {t.quantity ?? 1} vnt.{t.order_ref && ` · užs. ${t.order_ref}`} · pažymėta {formatDate(t.created_at)}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        )}
 
         {(canEdit || canDelete) && (
           <div className="flex flex-wrap gap-2">
@@ -1587,6 +1665,164 @@ function PartTransferModal({ part, onClose, onSave }) {
 // Kuriant (initial === null) — priedas + pirma vieta (sandėlis/lokacija/
 // kiekis). Redaguojant — katalogo laukai + kiekvienos vietos sandėlis/
 // lokacija, tuščios (0 vnt.) vietos pašalinimas ir naujų vietų pridėjimas.
+// "Paruošti išsiuntimui" — sukuria darbą (tasks), priskirtą sandėlininkui
+// (adminui). Likutis NEnurašomas — tai daroma atskirai, atkrovus.
+function ShipTaskModal({ part, onClose, onSave }) {
+  const total = totalQuantity(part);
+  const [quantity, setQuantity] = useState("1");
+  const [orderRef, setOrderRef] = useState("");
+  const [unitPrice, setUnitPrice] = useState(part.price != null ? String(part.price) : "");
+  const [note, setNote] = useState("");
+  const [assignees, setAssignees] = useState(null); // null = dar kraunama
+  const [assigneeId, setAssigneeId] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    supabase.rpc("task_assignees").then(({ data, error: rpcError }) => {
+      if (rpcError) setError(`Nepavyko įkelti gavėjų: ${rpcError.message}`);
+      const list = data || [];
+      setAssignees(list);
+      setAssigneeId(list[0]?.id || "");
+    });
+  }, []);
+
+  const qty = Number(quantity);
+  const qtyValid = Number.isInteger(qty) && qty > 0;
+  // Kaina nebūtina — jei vadybininkė jos nežino, ją įrašys sandėlininkas užbaigdamas.
+  const priceRaw = unitPrice.trim().replace(",", ".");
+  const priceNum = priceRaw === "" ? null : Number(priceRaw);
+  const priceValid = priceNum === null || (Number.isFinite(priceNum) && priceNum > 0);
+
+  async function submit(e) {
+    e.preventDefault();
+    if (!qtyValid) {
+      setError("Kiekis turi būti teigiamas sveikas skaičius.");
+      return;
+    }
+    if (!priceValid) {
+      setError("Kaina turi būti teigiamas skaičius.");
+      return;
+    }
+    setSaving(true);
+    const errorMessage = await onSave({
+      quantity: qty, orderRef: orderRef.trim(), unitPrice: priceNum, note: note.trim(), assigneeId
+    });
+    setSaving(false);
+    if (errorMessage) setError(errorMessage);
+  }
+
+  return (
+    <div className="fixed inset-0 z-30 flex items-end justify-center bg-ink-950/50 p-0 sm:items-center sm:p-4">
+      <form
+        onSubmit={submit}
+        className="max-h-[85vh] w-full max-w-md overflow-y-auto rounded-t-2xl bg-white p-5 shadow-panel sm:rounded-2xl"
+      >
+        <div className="mb-4 flex items-center justify-between">
+          <h2 className="text-base font-bold text-ink-900">Paruošti išsiuntimui</h2>
+          <button type="button" onClick={onClose} className="rounded-lg p-1.5 hover:bg-ink-900/5">
+            <X size={18} />
+          </button>
+        </div>
+
+        <p className="mb-3 text-sm text-ink-600/70">
+          {part.name || part.part_code} — likutyje: <span className="font-semibold text-ink-800">{total}</span>
+        </p>
+
+        <div className="space-y-3">
+          <div>
+            <label className="mb-1 block text-xs font-semibold text-ink-600/70">Kiekis</label>
+            <input
+              type="number"
+              min={1}
+              step={1}
+              value={quantity}
+              onChange={(e) => setQuantity(e.target.value)}
+              className="input-field w-28"
+              required
+            />
+            {qtyValid && qty > total && (
+              <p className="mt-1 flex items-center gap-1 text-xs font-medium text-signal-amber">
+                <AlertCircle size={13} /> Likutyje tik {total} vnt.
+              </p>
+            )}
+          </div>
+          <div>
+            <label className="mb-1 block text-xs font-semibold text-ink-600/70">Užsakymo nr. (nebūtina)</label>
+            <input
+              value={orderRef}
+              onChange={(e) => setOrderRef(e.target.value)}
+              placeholder="pvz. 10234"
+              className="input-field"
+            />
+          </div>
+          <div>
+            <label className="mb-1 block text-xs font-semibold text-ink-600/70">Pardavimo kaina už vnt. (nebūtina)</label>
+            <div className="flex items-center gap-2">
+              <input
+                type="number"
+                min={0}
+                step="0.01"
+                value={unitPrice}
+                onChange={(e) => setUnitPrice(e.target.value)}
+                placeholder="Nežinoma"
+                className="input-field w-32"
+              />
+              <span className="text-sm text-ink-600/50">€</span>
+              {priceNum > 0 && qtyValid && qty > 1 && (
+                <span className="text-xs text-ink-600/70">iš viso {(priceNum * qty).toFixed(2)} €</span>
+              )}
+            </div>
+          </div>
+          <div>
+            <label className="mb-1 block text-xs font-semibold text-ink-600/70">Pastaba (nebūtina)</label>
+            <textarea
+              value={note}
+              onChange={(e) => setNote(e.target.value)}
+              rows={2}
+              placeholder="pvz. Omniva paštomatas, skubu"
+              className="input-field resize-none"
+            />
+          </div>
+          {assignees?.length > 1 && (
+            <div>
+              <label className="mb-1 block text-xs font-semibold text-ink-600/70">Kam</label>
+              <select value={assigneeId} onChange={(e) => setAssigneeId(e.target.value)} className="input-field">
+                {assignees.map((a) => (
+                  <option key={a.id} value={a.id}>{a.username}</option>
+                ))}
+              </select>
+            </div>
+          )}
+          {assignees?.length === 0 && !error && (
+            <p className="text-xs font-medium text-signal-red">Nėra kam priskirti darbo — reikia bent vieno administratoriaus.</p>
+          )}
+          {assignees?.length === 1 && (
+            <p className="text-xs text-ink-600/60">
+              Darbas atsiras: <span className="font-semibold text-ink-800">{assignees[0].username}</span>
+            </p>
+          )}
+          {error && (
+            <p className="flex items-center gap-1.5 text-sm font-medium text-signal-red">
+              <AlertCircle size={16} className="shrink-0" /> {error}
+            </p>
+          )}
+        </div>
+
+        <div className="mt-5 flex justify-end gap-2">
+          <button type="button" onClick={onClose} className="btn-secondary">
+            Atšaukti
+          </button>
+          <button type="submit" disabled={saving || !assigneeId} className="btn-primary">
+            {saving ? <Loader2 size={14} className="animate-spin" /> : <Send size={14} />}
+            Sukurti darbą
+          </button>
+        </div>
+      </form>
+    </div>
+  );
+}
+
 function PartFormModal({ title, initial, onClose, onSave }) {
   const isCreating = !initial;
   const [form, setForm] = useState({

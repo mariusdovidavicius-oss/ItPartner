@@ -4069,3 +4069,238 @@ begin
   end if;
 end;
 $$;
+
+-- ============================================================
+-- "PARUOŠTI IŠSIUNTIMUI" — darbas iš priedo (žr. migrate_add_shipping_tasks.sql)
+-- ============================================================
+
+alter table public.tasks
+  add column if not exists part_id   uuid references public.parts (id) on delete set null,
+  add column if not exists quantity  integer,
+  add column if not exists order_ref text;
+
+alter table public.tasks drop constraint if exists tasks_quantity_check;
+alter table public.tasks
+  add constraint tasks_quantity_check check (quantity is null or quantity > 0);
+
+create index if not exists tasks_part_id_idx on public.tasks (part_id) where part_id is not null;
+
+-- Priskirtą darbą gali ištrinti (atšaukti) ir tas, kam jis priskirtas —
+-- kitaip sandėlininko "Ištrinti" tyliai nieko nedarytų (RLS filtruoja 0 eilučių).
+drop policy if exists "tasks_delete_own" on public.tasks;
+create policy "tasks_delete_own" on public.tasks
+  for delete to authenticated
+  using (created_by = auth.uid() or assigned_to = auth.uid());
+
+-- Kam galima priskirti išsiuntimo darbą. profiles RLS ne adminui rodo tik
+-- savo profilį, todėl sąrašas grąžinamas per security definer funkciją —
+-- tik id ir vardas, tik adminai (sandėlininkas).
+create or replace function public.task_assignees()
+returns table (id uuid, username text)
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select p.id, p.username
+  from public.profiles p
+  where p.is_admin
+  order by p.username;
+$$;
+
+revoke all on function public.task_assignees() from public, anon;
+grant execute on function public.task_assignees() to authenticated;
+
+-- ============================================================
+-- IŠSIUNTIMO DARBO UŽBAIGIMAS SU NURAŠYMU (žr. migrate_ship_task_writeoff.sql)
+-- ============================================================
+
+alter table public.tasks
+  add column if not exists unit_price numeric(10, 2);
+
+alter table public.tasks drop constraint if exists tasks_unit_price_check;
+alter table public.tasks
+  add constraint tasks_unit_price_check check (unit_price is null or unit_price > 0);
+
+alter table public.parts_writeoffs
+  add column if not exists task_id uuid references public.tasks (id) on delete set null;
+
+create index if not exists parts_writeoffs_task_id_idx on public.parts_writeoffs (task_id) where task_id is not null;
+
+-- p_lines = [{"stock_id": "…", "quantity": 2}, …] — iš kurių vietų nurašoma.
+-- Kiekvienai vietai — atskiras nurašymas, kaina = vnt. kaina × kiekis.
+-- Tikrinimai kaip writeoff_part() (teisė 'delete', kiekis ≤ likutis).
+create or replace function public.complete_ship_task(
+  p_task_id    uuid,
+  p_lines      jsonb,
+  p_unit_price numeric
+)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_task         public.tasks%rowtype;
+  v_line         jsonb;
+  v_stock_id     uuid;
+  v_quantity     integer;
+  v_part_id      uuid;
+  v_warehouse_id uuid;
+  v_location     text;
+  v_current_qty  integer;
+  v_total        integer := 0;
+begin
+  if not public.has_permission(auth.uid(), 'delete') then
+    raise exception 'Neturite nurašymo teisės.';
+  end if;
+
+  select * into v_task from public.tasks where id = p_task_id for update;
+  if v_task.id is null or not (v_task.created_by = auth.uid() or v_task.assigned_to = auth.uid()) then
+    raise exception 'Darbas nerastas.';
+  end if;
+  if v_task.part_id is null then
+    raise exception 'Darbas nesusietas su priedu.';
+  end if;
+  if exists (select 1 from public.parts_writeoffs where task_id = p_task_id and undone_at is null) then
+    raise exception 'Šis darbas jau nurašytas.';
+  end if;
+  if p_unit_price is null or p_unit_price <= 0 then
+    raise exception 'Įveskite kainą.';
+  end if;
+
+  for v_line in select * from jsonb_array_elements(coalesce(p_lines, '[]'::jsonb)) loop
+    v_stock_id := (v_line ->> 'stock_id')::uuid;
+    v_quantity := (v_line ->> 'quantity')::integer;
+    continue when v_quantity is null or v_quantity = 0;
+    if v_quantity < 0 then
+      raise exception 'Nurašomas kiekis turi būti didesnis už nulį.';
+    end if;
+
+    select part_id, warehouse_id, location, quantity
+      into v_part_id, v_warehouse_id, v_location, v_current_qty
+      from public.part_stock
+      where id = v_stock_id
+      for update;
+    if v_part_id is null or v_part_id <> v_task.part_id then
+      raise exception 'Likutis nerastas.';
+    end if;
+    if v_quantity > v_current_qty then
+      raise exception 'Vietoje % yra tik % vnt.', v_location, v_current_qty;
+    end if;
+
+    update public.part_stock set quantity = quantity - v_quantity where id = v_stock_id;
+
+    insert into public.parts_writeoffs (part_id, warehouse_id, location, user_id, quantity, reason_type, price, task_id)
+    values (v_part_id, v_warehouse_id, v_location, auth.uid(), v_quantity, 'parduota', p_unit_price * v_quantity, p_task_id);
+
+    v_total := v_total + v_quantity;
+  end loop;
+
+  if v_total = 0 then
+    raise exception 'Nurodykite, iš kurios vietos nurašoma.';
+  end if;
+
+  update public.tasks set done = true, unit_price = p_unit_price where id = p_task_id;
+end;
+$$;
+
+revoke all on function public.complete_ship_task(uuid, jsonb, numeric) from public, anon;
+grant execute on function public.complete_ship_task(uuid, jsonb, numeric) to authenticated;
+
+-- Grąžinti darbą į neatliktus ir atšaukti jo nurašymus (kiekis grįžta į
+-- tas pačias vietas per undo_writeoff()).
+create or replace function public.reopen_ship_task(p_task_id uuid)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_task public.tasks%rowtype;
+  v_id   uuid;
+begin
+  select * into v_task from public.tasks where id = p_task_id for update;
+  if v_task.id is null or not (v_task.created_by = auth.uid() or v_task.assigned_to = auth.uid()) then
+    raise exception 'Darbas nerastas.';
+  end if;
+
+  for v_id in
+    select id from public.parts_writeoffs where task_id = p_task_id and undone_at is null
+  loop
+    perform public.undo_writeoff(v_id);
+  end loop;
+
+  update public.tasks set done = false where id = p_task_id;
+end;
+$$;
+
+revoke all on function public.reopen_ship_task(uuid) from public, anon;
+grant execute on function public.reopen_ship_task(uuid) to authenticated;
+
+-- ============================================================
+-- WEB PUSH PRENUMERATOS (žr. migrate_add_push_subscriptions.sql)
+-- ============================================================
+
+create table if not exists public.push_subscriptions (
+  id          uuid primary key default gen_random_uuid(),
+  user_id     uuid not null references auth.users (id) on delete cascade,
+  endpoint    text not null unique,
+  p256dh      text not null,
+  auth        text not null,
+  user_agent  text,
+  created_at  timestamptz not null default now()
+);
+
+comment on table public.push_subscriptions is 'Web Push prenumeratos (vienas įrenginys/naršyklė = viena eilutė).';
+
+create index if not exists push_subscriptions_user_id_idx on public.push_subscriptions (user_id);
+
+alter table public.push_subscriptions enable row level security;
+
+drop policy if exists "push_subscriptions_select_own" on public.push_subscriptions;
+create policy "push_subscriptions_select_own" on public.push_subscriptions
+  for select to authenticated
+  using (user_id = auth.uid());
+
+drop policy if exists "push_subscriptions_delete_own" on public.push_subscriptions;
+create policy "push_subscriptions_delete_own" on public.push_subscriptions
+  for delete to authenticated
+  using (user_id = auth.uid());
+
+-- Išsaugo šios naršyklės prenumeratą dabartiniam vartotojui. Per security
+-- definer, kad bendrame kompiuteryje (ta pati naršyklė = tas pats endpoint)
+-- prenumerata pereitų prisijungusiam vartotojui — paprastas upsert
+-- atsitrenktų į kito vartotojo eilutės RLS.
+create or replace function public.save_push_subscription(
+  p_endpoint   text,
+  p_p256dh     text,
+  p_auth       text,
+  p_user_agent text default null
+)
+returns void
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  if auth.uid() is null then
+    raise exception 'Reikia prisijungti.';
+  end if;
+  if coalesce(trim(p_endpoint), '') = '' or coalesce(p_p256dh, '') = '' or coalesce(p_auth, '') = '' then
+    raise exception 'Neteisinga prenumerata.';
+  end if;
+
+  insert into public.push_subscriptions (user_id, endpoint, p256dh, auth, user_agent)
+  values (auth.uid(), p_endpoint, p_p256dh, p_auth, p_user_agent)
+  on conflict (endpoint) do update
+    set user_id    = excluded.user_id,
+        p256dh     = excluded.p256dh,
+        auth       = excluded.auth,
+        user_agent = excluded.user_agent,
+        created_at = now();
+end;
+$$;
+
+revoke all on function public.save_push_subscription(text, text, text, text) from public, anon;
+grant execute on function public.save_push_subscription(text, text, text, text) to authenticated;

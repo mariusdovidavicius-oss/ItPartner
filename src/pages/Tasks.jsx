@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Plus, Loader2, AlertCircle, Check, ChevronDown, Trash2, CalendarDays, StickyNote, ListTodo,
-  Star, GripVertical, Clock, X, ListChecks
+  Star, GripVertical, Clock, X, ListChecks, Package, MapPin, UserRound, Bell, BellOff
 } from "lucide-react";
 import {
   DndContext, closestCenter, KeyboardSensor, PointerSensor, useSensor, useSensors
@@ -14,6 +14,7 @@ import { supabase } from "../lib/supabaseClient";
 import { useAuth } from "../lib/AuthProvider";
 import { localDateStr, addDaysStr, daysUntil, formatDue } from "../lib/tasks";
 import { formatDate } from "../lib/format";
+import { getPushState, enablePush, disablePush, sendPush, needsHomeScreenInstall } from "../lib/push";
 
 // Darbų sąrašas — asmeniniai priminimai vietoj lipnių lapelių. Matomas tik
 // prisijungusiam savininkui (RLS, žr. supabase/migrate_add_tasks.sql); kol kas
@@ -28,6 +29,13 @@ import { formatDate } from "../lib/format";
 
 const DONE_LIMIT = 50;
 
+// Išsiuntimo darbams (sukurtiems iš /priedai "Paruošti išsiuntimui") kartu
+// pakraunamas priedas su vietomis — kortelėje iškart matosi, kur jis guli.
+// writeoffs — šio darbo nurašymai (matomi tik turintiems 'delete' teisę).
+const TASK_SELECT =
+  "*, part:parts(id, name, part_code, main_model, price, part_stock(id, location, quantity, warehouses(name))), " +
+  "writeoffs:parts_writeoffs(id, quantity, undone_at)";
+
 const GROUPS = [
   { key: "overdue", label: "Vėluoja", tone: "text-signal-red" },
   { key: "today", label: "Šiandien", tone: "text-signal-orange" },
@@ -38,13 +46,79 @@ const GROUPS = [
 // Kortelės viršutinė juosta, fonas ir termino ženkliukas — spalva pagal
 // grupę. Švelnus fonas tik skubiems (vėluoja/šiandien) ir atliktiems —
 // ramūs darbai lieka balti, kad skubūs išsiskirtų.
-const CARD_ACCENT = {
-  overdue: "border-t-signal-red bg-signal-red/[0.06]",
-  today: "border-t-signal-orange bg-signal-orange/[0.07]",
+// Išsiuntimo darbų juosta — violetinė (kitokia nei grupių), kad tarp
+// priminimų išsiskirtų; fonas vis tiek pagal skubumą.
+const CARD_BORDER = {
+  overdue: "border-t-signal-red",
+  today: "border-t-signal-orange",
   later: "border-t-signal-blue",
   none: "border-t-ink-600/20",
-  done: "border-t-signal-teal bg-ink-900/[0.03]"
+  done: "border-t-signal-teal"
 };
+const CARD_BG = {
+  overdue: "bg-signal-red/[0.06]",
+  today: "bg-signal-orange/[0.07]",
+  later: "bg-white",
+  none: "bg-white",
+  done: "bg-ink-900/[0.03]"
+};
+
+const FILTERS = [
+  { key: "all", label: "Visi" },
+  { key: "ship", label: "Išsiuntimai" },
+  { key: "own", label: "Priminimai" }
+];
+
+// Perbraukimas telefone: kiek pikselių reikia, kad suveiktų.
+const SWIPE_THRESHOLD = 90;
+
+function isShipTask(task) {
+  return !!(task.part_id || task.quantity);
+}
+
+// Filtras "Visi / Išsiuntimai / Priminimai".
+function matchesFilter(task, filter) {
+  return filter === "all" || (filter === "ship") === isShipTask(task);
+}
+
+// Kiek laiko užsakymas laukia ("15 min.", "3 val.", "2 d.").
+function formatAge(createdAt, now = Date.now()) {
+  const minutes = Math.max(0, Math.floor((now - new Date(createdAt).getTime()) / 60000));
+  if (minutes < 1) return "ką tik";
+  if (minutes < 60) return `${minutes} min.`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours} val.`;
+  return `${Math.floor(hours / 24)} d.`;
+}
+
+// Vieta, iš kurios siūloma imti (daugiausia vienetų) — rikiavimui pagal vietą.
+function mainLocation(task) {
+  return stockPlaces(task.part)[0]?.location ?? null;
+}
+
+// "8" prieš "42" (skaitine tvarka); be vietos — gale.
+function byLocation(a, b) {
+  const la = mainLocation(a);
+  const lb = mainLocation(b);
+  if (la == null || lb == null) return (la == null) - (lb == null);
+  return String(la).localeCompare(String(lb), undefined, { numeric: true });
+}
+
+function readPref(key, fallback) {
+  try {
+    return localStorage.getItem(key) ?? fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function writePref(key, value) {
+  try {
+    localStorage.setItem(key, value);
+  } catch {
+    // privatus langas ir pan. — nustatymas tiesiog neišsaugomas
+  }
+}
 const DUE_CHIP = {
   overdue: "bg-signal-red/10 text-signal-red",
   today: "bg-signal-orange/10 text-signal-orange",
@@ -282,12 +356,62 @@ function SnoozeButton({ onSnooze }) {
   );
 }
 
-function TaskCard({ task, today, editing, sortable, onToggle, onEdit, onSave, onDelete, onCancel, onPatch }) {
+// Priedo blokas išsiuntimo darbo kortelėje: kiekis, kodas, užsakymo nr.,
+// vietos su likučiu (daugiausia vienetų turinti — pirma) ir kas pažymėjo.
+function ShipInfo({ task, fromName }) {
+  const part = task.part;
+  const places = stockPlaces(part);
+  const writtenOff = activeWriteoffs(task).reduce((sum, w) => sum + w.quantity, 0);
+  return (
+    <div className="space-y-1 rounded-lg bg-violet-500/[0.07] px-2.5 py-2 text-[13px] leading-snug text-ink-800">
+      <p className="flex flex-wrap items-center gap-x-1.5">
+        <Package size={13} className="shrink-0 text-violet-600" />
+        <span className="font-semibold">{task.quantity ?? 1} vnt.</span>
+        {part?.part_code && <span className="font-mono text-ink-600/80">{part.part_code}</span>}
+        {task.order_ref && <span className="text-ink-600/80">· užs. {task.order_ref}</span>}
+        {task.unit_price != null && <span className="text-ink-600/80">· {Number(task.unit_price).toFixed(2)} €/vnt.</span>}
+      </p>
+      {task.done ? (
+        <p className={writtenOff > 0 ? "font-semibold text-signal-teal" : "text-ink-600/60"}>
+          {writtenOff > 0 ? `Nurašyta ${writtenOff} vnt.` : "Nenurašyta"}
+        </p>
+      ) : part ? (
+        places.length > 0 ? (
+          <p className="flex gap-1.5">
+            <MapPin size={13} className="mt-0.5 shrink-0 text-violet-600" />
+            <span>
+              {places.map((s, i) => (
+                <span key={i}>
+                  {i > 0 && ", "}
+                  {s.warehouses?.name && `${s.warehouses.name} — `}
+                  <span className="font-bold">{s.location}</span> ({s.quantity})
+                </span>
+              ))}
+            </span>
+          </p>
+        ) : (
+          <p className="text-signal-red">Likutyje nėra</p>
+        )
+      ) : (
+        <p className="text-ink-600/60">Priedas ištrintas</p>
+      )}
+      {fromName && (
+        <p className="flex items-center gap-1.5 text-ink-600/70">
+          <UserRound size={13} className="shrink-0" /> Nuo: {fromName}
+        </p>
+      )}
+    </div>
+  );
+}
+
+function TaskCard({ task, today, editing, sortable, fromName, onToggle, onEdit, onSave, onDelete, onCancel, onPatch }) {
   const { attributes, listeners, setNodeRef, setActivatorNodeRef, transform, transition, isDragging } = useSortable({
     id: task.id,
     disabled: !sortable || editing
   });
   const style = { transform: CSS.Translate.toString(transform), transition };
+  const swipe = useRef(null); // { x, y, axis } — perbraukimo pradžia
+  const [swipeDx, setSwipeDx] = useState(0);
 
   if (editing) {
     return (
@@ -298,21 +422,82 @@ function TaskCard({ task, today, editing, sortable, onToggle, onEdit, onSave, on
   }
 
   const group = task.done ? "done" : groupOf(task, today);
+  const ship = isShipTask(task);
+  const border = ship && !task.done ? "border-t-violet-500" : CARD_BORDER[group];
   const steps = task.steps || [];
   const stepsDone = steps.filter((s) => s.done).length;
+  const ageHours = (Date.now() - new Date(task.created_at).getTime()) / 3600000;
 
   function toggleStep(id) {
     onPatch({ steps: steps.map((s) => (s.id === id ? { ...s, done: !s.done } : s)) });
+  }
+
+  // Perbraukimas telefone: į dešinę — atlikta (ar grąžinta), į kairę —
+  // atidėti rytojui. Vertikalų slinkimą palieka naršyklei (touch-action:
+  // pan-y); tempimo rankenėlė (data-grip) perbraukimo nepradeda.
+  function onTouchStart(e) {
+    if (e.target.closest("[data-grip]")) return;
+    const t = e.touches[0];
+    swipe.current = { x: t.clientX, y: t.clientY, axis: null };
+  }
+
+  function onTouchMove(e) {
+    const s = swipe.current;
+    if (!s) return;
+    const t = e.touches[0];
+    const dx = t.clientX - s.x;
+    const dy = t.clientY - s.y;
+    if (!s.axis) {
+      if (Math.abs(dx) < 8 && Math.abs(dy) < 8) return;
+      s.axis = Math.abs(dx) > Math.abs(dy) ? "x" : "y";
+    }
+    if (s.axis !== "x") return;
+    // Atliktų darbų į kairę (atidėti) nebraukiama.
+    setSwipeDx(task.done ? Math.max(0, dx) : dx);
+  }
+
+  function onTouchEnd() {
+    const dx = swipeDx;
+    swipe.current = null;
+    setSwipeDx(0);
+    if (dx > SWIPE_THRESHOLD) onToggle();
+    else if (dx < -SWIPE_THRESHOLD) onPatch({ due_date: addDaysStr(1) });
   }
 
   return (
     <li
       ref={setNodeRef}
       style={style}
-      className={`panel relative flex flex-col border-t-4 p-0 ${CARD_ACCENT[group]} ${task.done ? "opacity-70" : ""} ${
+      className={`panel relative flex flex-col overflow-hidden border-t-4 p-0 ${border} ${task.done ? "opacity-70" : ""} ${
         isDragging ? "z-10 shadow-lg ring-2 ring-signal-orange/30" : ""
       }`}
     >
+      {swipeDx !== 0 && (
+        <div
+          className={`absolute inset-0 flex items-center px-4 text-sm font-semibold text-white ${
+            swipeDx > 0 ? "justify-start bg-signal-teal" : "justify-end bg-signal-amber"
+          }`}
+        >
+          {swipeDx > 0 ? (
+            <span className="flex items-center gap-1.5"><Check size={16} /> {task.done ? "Grąžinti" : "Atlikta"}</span>
+          ) : (
+            <span className="flex items-center gap-1.5"><Clock size={16} /> Rytoj</span>
+          )}
+        </div>
+      )}
+      <div
+        onTouchStart={onTouchStart}
+        onTouchMove={onTouchMove}
+        onTouchEnd={onTouchEnd}
+        onTouchCancel={() => { swipe.current = null; setSwipeDx(0); }}
+        style={{
+          transform: swipeDx ? `translateX(${swipeDx}px)` : undefined,
+          transition: swipe.current ? "none" : "transform 150ms ease-out",
+          touchAction: "pan-y"
+        }}
+        className="relative flex flex-1 flex-col bg-white"
+      >
+      <div className={`flex flex-1 flex-col ${CARD_BG[group]}`}>
       <div className="flex flex-1 items-start gap-2.5 p-3 pb-2">
         <button
           type="button"
@@ -339,6 +524,13 @@ function TaskCard({ task, today, editing, sortable, onToggle, onEdit, onSave, on
               </p>
             )}
           </button>
+
+          {(task.part_id || task.quantity) && <ShipInfo task={task} fromName={fromName} />}
+          {!task.part_id && !task.quantity && fromName && (
+            <p className="flex items-center gap-1.5 text-[13px] text-ink-600/70">
+              <UserRound size={13} className="shrink-0" /> Nuo: {fromName}
+            </p>
+          )}
 
           {steps.length > 0 && (
             <ul className="space-y-1">
@@ -379,6 +571,7 @@ function TaskCard({ task, today, editing, sortable, onToggle, onEdit, onSave, on
             <button
               type="button"
               ref={setActivatorNodeRef}
+              data-grip
               {...attributes}
               {...listeners}
               className="cursor-grab touch-none rounded-lg p-1.5 text-ink-600/30 hover:bg-ink-900/5 hover:text-ink-600/70 active:cursor-grabbing"
@@ -391,6 +584,21 @@ function TaskCard({ task, today, editing, sortable, onToggle, onEdit, onSave, on
       </div>
 
       <div className="flex min-h-[2.25rem] flex-wrap items-center gap-1.5 border-t border-ink-900/5 px-3 py-1.5">
+        {ship && (
+          <span className="inline-flex items-center gap-1 rounded-full bg-violet-500/10 px-2 py-0.5 text-xs font-semibold text-violet-700">
+            <Package size={12} /> Išsiuntimas
+          </span>
+        )}
+        {ship && !task.done && (
+          <span
+            className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-semibold ${
+              ageHours >= 24 ? "bg-signal-red/10 text-signal-red" : "bg-ink-900/5 text-ink-600/70"
+            }`}
+            title={`Pažymėta ${formatDate(task.created_at)}`}
+          >
+            <Clock size={12} /> Laukia {formatAge(task.created_at)}
+          </span>
+        )}
         {task.done ? (
           <span className="text-xs text-ink-600/50">Atlikta {formatDate(task.done_at)}</span>
         ) : task.due_date ? (
@@ -412,6 +620,8 @@ function TaskCard({ task, today, editing, sortable, onToggle, onEdit, onSave, on
             <SnoozeButton onSnooze={(date) => onPatch({ due_date: date })} />
           </div>
         )}
+      </div>
+      </div>
       </div>
     </li>
   );
@@ -451,8 +661,244 @@ function SortableGroup({ tasks, onReorder, children }) {
   );
 }
 
+function activeWriteoffs(task) {
+  return (task.writeoffs || []).filter((w) => !w.undone_at);
+}
+
+// Vietos, iš kurių siūloma nurašyti: pirma ta, kur daugiausia vienetų.
+function stockPlaces(part) {
+  return (part?.part_stock || [])
+    .filter((s) => (s.quantity ?? 0) > 0)
+    .sort((a, b) => (b.quantity ?? 0) - (a.quantity ?? 0));
+}
+
+// "Atkrauta — nurašyti?" — užbaigiant išsiuntimo darbą. Kiekis iš anksto
+// paskirstomas nuo vietos, kur daugiausia vienetų; kaina — vadybininkės
+// įrašyta, jei nėra — priedo kaina, jei ir jos nėra — įrašoma čia.
+function CompleteShipModal({ task, onClose, onWriteoff, onCompleteOnly }) {
+  const places = stockPlaces(task.part);
+  const [amounts, setAmounts] = useState(() => {
+    let left = task.quantity ?? 1;
+    return Object.fromEntries(places.map((s) => {
+      const take = Math.min(left, s.quantity);
+      left -= take;
+      return [s.id, String(take)];
+    }));
+  });
+  const initialPrice = task.unit_price ?? task.part?.price;
+  const [unitPrice, setUnitPrice] = useState(initialPrice != null ? String(initialPrice) : "");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+
+  const lines = places.map((s) => ({ stock_id: s.id, quantity: Number(amounts[s.id] || 0) }));
+  const totalQty = lines.reduce((sum, l) => sum + (Number.isInteger(l.quantity) ? l.quantity : 0), 0);
+  const price = Number(unitPrice.trim().replace(",", "."));
+  const priceValid = unitPrice.trim() !== "" && Number.isFinite(price) && price > 0;
+
+  async function submit(e) {
+    e.preventDefault();
+    const bad = places.find((s) => {
+      const q = Number(amounts[s.id] || 0);
+      return !Number.isInteger(q) || q < 0 || q > s.quantity;
+    });
+    if (bad) {
+      setError(`Vietoje ${bad.location} yra tik ${bad.quantity} vnt.`);
+      return;
+    }
+    if (totalQty === 0) {
+      setError("Nurodykite, iš kurios vietos nurašoma.");
+      return;
+    }
+    if (!priceValid) {
+      setError("Įveskite pardavimo kainą už vnt.");
+      return;
+    }
+    setSaving(true);
+    const errorMessage = await onWriteoff({ lines: lines.filter((l) => l.quantity > 0), unitPrice: price });
+    setSaving(false);
+    if (errorMessage) setError(errorMessage);
+  }
+
+  return (
+    <div className="fixed inset-0 z-30 flex items-end justify-center bg-ink-950/50 p-0 sm:items-center sm:p-4">
+      <form
+        onSubmit={submit}
+        className="max-h-[85vh] w-full max-w-md overflow-y-auto rounded-t-2xl bg-white p-5 shadow-panel sm:rounded-2xl"
+      >
+        <div className="mb-4 flex items-center justify-between">
+          <h2 className="text-base font-bold text-ink-900">Atkrauta — nurašyti?</h2>
+          <button type="button" onClick={onClose} className="rounded-lg p-1.5 hover:bg-ink-900/5">
+            <X size={18} />
+          </button>
+        </div>
+
+        <p className="mb-3 text-sm text-ink-600/70">
+          {task.part?.name || task.part?.part_code || "Priedas"} — užsakyta{" "}
+          <span className="font-semibold text-ink-800">{task.quantity ?? 1} vnt.</span>
+          {task.order_ref && ` · užs. ${task.order_ref}`}
+        </p>
+
+        <div className="space-y-3">
+          {places.length === 0 ? (
+            <p className="flex items-center gap-1.5 text-sm font-medium text-signal-red">
+              <AlertCircle size={16} className="shrink-0" /> Likutyje nėra — nėra ko nurašyti.
+            </p>
+          ) : (
+            <div>
+              <p className="mb-1 text-xs font-semibold text-ink-600/70">Iš kur nurašoma</p>
+              <ul className="space-y-1.5">
+                {places.map((s) => (
+                  <li key={s.id} className="flex items-center justify-between gap-2">
+                    <span className="text-sm text-ink-800">
+                      {s.warehouses?.name && `${s.warehouses.name} — `}
+                      <span className="font-bold">{s.location}</span>
+                      <span className="text-ink-600/60"> ({s.quantity} vnt.)</span>
+                    </span>
+                    <input
+                      type="number"
+                      min={0}
+                      max={s.quantity}
+                      step={1}
+                      value={amounts[s.id] ?? "0"}
+                      onChange={(e) => setAmounts((prev) => ({ ...prev, [s.id]: e.target.value }))}
+                      className="input-field w-20 py-1.5 text-sm"
+                    />
+                  </li>
+                ))}
+              </ul>
+              {totalQty !== (task.quantity ?? 1) && (
+                <p className="mt-1 text-xs font-medium text-signal-amber">
+                  Nurašoma {totalQty} vnt., užsakyta {task.quantity ?? 1}.
+                </p>
+              )}
+            </div>
+          )}
+
+          <div>
+            <label className="mb-1 block text-xs font-semibold text-ink-600/70">Pardavimo kaina už vnt.</label>
+            <div className="flex items-center gap-2">
+              <input
+                type="number"
+                min={0}
+                step="0.01"
+                value={unitPrice}
+                onChange={(e) => setUnitPrice(e.target.value)}
+                placeholder="Įveskite"
+                className="input-field w-32"
+              />
+              <span className="text-sm text-ink-600/50">€</span>
+              {priceValid && totalQty > 1 && (
+                <span className="text-xs text-ink-600/70">iš viso {(price * totalQty).toFixed(2)} €</span>
+              )}
+            </div>
+            {task.unit_price == null && (
+              <p className="mt-1 text-xs text-ink-600/60">
+                Vadybininkė kainos neįrašė{task.part?.price != null ? " — pasiūlyta priedo kaina." : "."}
+              </p>
+            )}
+          </div>
+
+          {error && (
+            <p className="flex items-center gap-1.5 text-sm font-medium text-signal-red">
+              <AlertCircle size={16} className="shrink-0" /> {error}
+            </p>
+          )}
+        </div>
+
+        <div className="mt-5 flex flex-wrap items-center justify-between gap-2">
+          <button type="button" onClick={onCompleteOnly} className="text-xs font-semibold text-ink-600/60 underline hover:text-ink-800">
+            Užbaigti be nurašymo
+          </button>
+          <div className="flex gap-2">
+            <button type="button" onClick={onClose} className="btn-secondary">
+              Atšaukti
+            </button>
+            <button type="submit" disabled={saving || places.length === 0} className="btn-primary">
+              {saving ? <Loader2 size={14} className="animate-spin" /> : <Check size={14} />}
+              Nurašyti ir užbaigti
+            </button>
+          </div>
+        </div>
+      </form>
+    </div>
+  );
+}
+
+// Pranešimų (Web Push) įjungimas šiame įrenginyje — kiekviename kompiuteryje
+// ar telefone įjungiama atskirai. Įjungus galima išsiųsti bandomąjį.
+function PushToggle() {
+  const [state, setState] = useState(null); // null = tikrinama
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState("");
+
+  useEffect(() => {
+    getPushState().then(setState).catch(() => setState("unsupported"));
+  }, []);
+
+  async function run(action) {
+    setBusy(true);
+    setMessage("");
+    try {
+      await action();
+    } catch (err) {
+      setMessage(err.message === "denied" ? "Naršyklė užblokavo pranešimus." : `Nepavyko: ${err.message}`);
+    }
+    setState(await getPushState().catch(() => "unsupported"));
+    setBusy(false);
+  }
+
+  async function test() {
+    const { sent } = await sendPush({ test: true });
+    setMessage(sent ? "Bandomasis pranešimas išsiųstas." : "Šiam įrenginiui pranešimas neišsiųstas.");
+  }
+
+  if (state === null) return null;
+
+  if (state === "unsupported") {
+    return needsHomeScreenInstall() ? (
+      <p className="max-w-xs text-xs text-ink-600/60">
+        Pranešimams iPhone: „Bendrinti“ → „Pridėti prie pradžios ekrano“ ir atidaryk programą iš ten.
+      </p>
+    ) : null;
+  }
+
+  return (
+    <div className="flex flex-col items-end gap-1">
+      <div className="flex flex-wrap gap-1.5">
+        {state === "on" ? (
+          <>
+            <span className="inline-flex items-center gap-1 self-center text-xs font-semibold text-signal-teal">
+              {busy ? <Loader2 size={14} className="animate-spin" /> : <Bell size={14} />} Pranešimai įjungti
+            </span>
+            <button type="button" onClick={() => run(test)} disabled={busy} className="btn-secondary px-3 py-1.5 text-xs">
+              Bandomasis
+            </button>
+            <button type="button" onClick={() => run(disablePush)} disabled={busy} className="btn-secondary px-3 py-1.5 text-xs">
+              Išjungti
+            </button>
+          </>
+        ) : state === "denied" ? (
+          <span className="inline-flex items-center gap-1 text-xs text-ink-600/60">
+            <BellOff size={14} /> Pranešimai užblokuoti naršyklės nustatymuose
+          </span>
+        ) : (
+          <button type="button" onClick={() => run(enablePush)} disabled={busy} className="btn-secondary px-3 py-1.5 text-xs">
+            {busy ? <Loader2 size={14} className="animate-spin" /> : <BellOff size={14} />} Įjungti pranešimus
+          </button>
+        )}
+      </div>
+      {message && <p className="text-xs text-ink-600/70">{message}</p>}
+    </div>
+  );
+}
+
 export default function Tasks() {
-  const { user } = useAuth();
+  const { user, hasPermission } = useAuth();
+  const canWriteoff = hasPermission("delete");
+  const [completing, setCompleting] = useState(null); // išsiuntimo darbas, kurį užbaigiant nurašoma
+  const [filter, setFilter] = useState(() => readPref("tasks.filter", "all"));
+  // Rikiuoti pagal vietą — kad atkrautum viską vienu ėjimu per sandėlį.
+  const [byPlace, setByPlace] = useState(() => readPref("tasks.byPlace", "0") === "1");
   const [openTasks, setOpenTasks] = useState([]);
   const [doneTasks, setDoneTasks] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -463,12 +909,13 @@ export default function Tasks() {
   const [editingId, setEditingId] = useState(null);
   const [showDone, setShowDone] = useState(false);
   const [today, setToday] = useState(localDateStr);
+  const [names, setNames] = useState({}); // created_by -> vardas (kitų sukurtiems darbams)
   const inputRef = useRef(null);
 
   async function load() {
     const [openRes, doneRes] = await Promise.all([
-      supabase.from("tasks").select("*").eq("done", false).order("position", { ascending: true }),
-      supabase.from("tasks").select("*").eq("done", true)
+      supabase.from("tasks").select(TASK_SELECT).eq("done", false).order("position", { ascending: true }),
+      supabase.from("tasks").select(TASK_SELECT).eq("done", true)
         .order("done_at", { ascending: false })
         .limit(DONE_LIMIT)
     ]);
@@ -478,8 +925,18 @@ export default function Tasks() {
       setOpenTasks(openRes.data);
       setDoneTasks(doneRes.data);
       setError("");
+      loadNames([...openRes.data, ...doneRes.data]);
     }
     setLoading(false);
+  }
+
+  // Kas sukūrė man priskirtą darbą ("Nuo: …"). tasks.created_by rodo į
+  // auth.users, ne profiles, todėl vardai pakraunami atskirai.
+  async function loadNames(tasks) {
+    const ids = [...new Set(tasks.map((t) => t.created_by).filter((id) => id !== user.id))];
+    if (!ids.length) return;
+    const { data } = await supabase.from("profiles").select("id, username").in("id", ids);
+    setNames(Object.fromEntries((data || []).map((p) => [p.id, p.username])));
   }
 
   useEffect(() => {
@@ -503,11 +960,35 @@ export default function Tasks() {
     };
   }, []);
 
+  const shipCount = openTasks.filter(isShipTask).length;
+  const visibleOpen = openTasks.filter((t) => matchesFilter(t, filter));
+  const visibleDone = doneTasks.filter((t) => matchesFilter(t, filter));
+
+  // Pagal vietą: išsiuntimai grupės viršuje vietų tvarka ("8" prieš "42"),
+  // po jų — kiti darbai įprasta tvarka. Tempti šiame režime negalima.
   const grouped = useMemo(() => {
     const map = { overdue: [], today: [], later: [], none: [] };
-    [...openTasks].sort(byStarThenPosition).forEach((t) => map[groupOf(t, today)].push(t));
+    const order = byPlace
+      ? (a, b) => (isShipTask(b) - isShipTask(a)) || (isShipTask(a) ? byLocation(a, b) : byStarThenPosition(a, b))
+      : byStarThenPosition;
+    openTasks
+      .filter((t) => matchesFilter(t, filter))
+      .sort(order)
+      .forEach((t) => map[groupOf(t, today)].push(t));
     return map;
-  }, [openTasks, today]);
+  }, [openTasks, filter, today, byPlace]);
+
+  function changeFilter(value) {
+    setFilter(value);
+    writePref("tasks.filter", value);
+  }
+
+  function toggleByPlace() {
+    setByPlace((prev) => {
+      writePref("tasks.byPlace", prev ? "0" : "1");
+      return !prev;
+    });
+  }
 
   async function handleAdd(e) {
     e.preventDefault();
@@ -545,8 +1026,38 @@ export default function Tasks() {
     }
   }
 
+  // Išsiuntimo darbas (susietas su priedu): užbaigiant siūloma nurašyti
+  // kiekį, grąžinant į neatliktus — atšaukiami jo nurašymai.
   async function handleToggle(task) {
-    const done = !task.done;
+    if (!task.done && task.part_id && canWriteoff) {
+      setCompleting(task);
+      return;
+    }
+    const active = activeWriteoffs(task);
+    if (task.done && active.length > 0) {
+      const qty = active.reduce((sum, w) => sum + w.quantity, 0);
+      if (!confirm(`Grąžinus darbą bus atšauktas nurašymas — ${qty} vnt. grįš į likutį. Tęsti?`)) return;
+      const { error: rpcError } = await supabase.rpc("reopen_ship_task", { p_task_id: task.id });
+      if (rpcError) setError(`Nepavyko grąžinti: ${rpcError.message}`);
+      load();
+      return;
+    }
+    setTaskDone(task, !task.done);
+  }
+
+  // Grąžina klaidos tekstą, jei nepavyko (CompleteShipModal jį rodo formoje).
+  async function handleCompleteShip(task, { lines, unitPrice }) {
+    const { error: rpcError } = await supabase.rpc("complete_ship_task", {
+      p_task_id: task.id,
+      p_lines: lines,
+      p_unit_price: unitPrice
+    });
+    if (rpcError) return rpcError.message;
+    setCompleting(null);
+    load();
+  }
+
+  async function setTaskDone(task, done) {
     const updated = { ...task, done, done_at: done ? new Date().toISOString() : null };
     if (done) {
       setOpenTasks((prev) => prev.filter((t) => t.id !== task.id));
@@ -593,6 +1104,7 @@ export default function Tasks() {
         task={task}
         today={today}
         sortable={sortable}
+        fromName={task.created_by !== user.id ? names[task.created_by] || "kolega" : null}
         editing={editingId === task.id}
         onToggle={() => handleToggle(task)}
         onEdit={() => setEditingId(task.id)}
@@ -606,9 +1118,12 @@ export default function Tasks() {
 
   return (
     <div className="mx-auto max-w-5xl space-y-5">
-      <div>
-        <h1 className="text-xl font-bold text-ink-900 lg:text-2xl">Darbai</h1>
-        <p className="mt-1 text-sm text-ink-600/70">Tavo darbų sąrašas — matai tik tu.</p>
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h1 className="text-xl font-bold text-ink-900 lg:text-2xl">Darbai</h1>
+          <p className="mt-1 text-sm text-ink-600/70">Tavo darbų sąrašas — matai tik tu.</p>
+        </div>
+        <PushToggle />
       </div>
 
       {error && (
@@ -641,10 +1156,45 @@ export default function Tasks() {
         </div>
       ) : (
         <>
-          {openTasks.length === 0 && (
+          {(shipCount > 0 || filter !== "all") && (
+            <div className="flex flex-wrap items-center gap-1.5">
+              {FILTERS.map((f) => (
+                <button
+                  key={f.key}
+                  type="button"
+                  onClick={() => changeFilter(f.key)}
+                  className={`rounded-full border px-3 py-1.5 text-xs font-semibold transition ${
+                    filter === f.key
+                      ? "border-ink-900 bg-ink-900 text-white"
+                      : "border-ink-700/15 bg-white text-ink-700 hover:bg-ink-900/[0.03]"
+                  }`}
+                >
+                  {f.label}
+                  {f.key === "ship" && shipCount > 0 && <span className="ml-1 opacity-60">{shipCount}</span>}
+                </button>
+              ))}
+              {filter !== "own" && shipCount > 1 && (
+                <button
+                  type="button"
+                  onClick={toggleByPlace}
+                  className={`ml-auto inline-flex items-center gap-1 rounded-full border px-3 py-1.5 text-xs font-semibold transition ${
+                    byPlace
+                      ? "border-violet-500 bg-violet-500/10 text-violet-700"
+                      : "border-ink-700/15 bg-white text-ink-700 hover:bg-ink-900/[0.03]"
+                  }`}
+                >
+                  <MapPin size={13} /> Pagal vietą
+                </button>
+              )}
+            </div>
+          )}
+
+          {visibleOpen.length === 0 && (
             <div className="panel flex flex-col items-center gap-2 py-10 text-center">
               <ListTodo className="text-ink-600/30" size={26} />
-              <p className="text-sm text-ink-600/60">Neatliktų darbų nėra.</p>
+              <p className="text-sm text-ink-600/60">
+                {filter === "ship" ? "Laukiančių išsiuntimų nėra." : "Neatliktų darbų nėra."}
+              </p>
             </div>
           )}
 
@@ -655,13 +1205,13 @@ export default function Tasks() {
               </h2>
               <SortableGroup tasks={grouped[g.key]} onReorder={patchTask}>
                 <ul className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
-                  {grouped[g.key].map((t) => renderCard(t, true))}
+                  {grouped[g.key].map((t) => renderCard(t, !byPlace))}
                 </ul>
               </SortableGroup>
             </section>
           ))}
 
-          {doneTasks.length > 0 && (
+          {visibleDone.length > 0 && (
             <section>
               <button
                 type="button"
@@ -669,18 +1219,31 @@ export default function Tasks() {
                 className="mb-1.5 flex items-center gap-1 px-1 text-xs font-bold uppercase tracking-wide text-ink-600/60 hover:text-ink-700"
               >
                 <ChevronDown size={14} className={`transition-transform ${showDone ? "" : "-rotate-90"}`} />
-                Atlikti <span className="font-semibold text-ink-600/40">{doneTasks.length}{doneTasks.length >= DONE_LIMIT && "+"}</span>
+                Atlikti <span className="font-semibold text-ink-600/40">{visibleDone.length}{doneTasks.length >= DONE_LIMIT && "+"}</span>
               </button>
               {showDone && (
                 <SortableGroup tasks={[]} onReorder={() => {}}>
                   <ul className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
-                    {doneTasks.map((t) => renderCard(t, false))}
+                    {visibleDone.map((t) => renderCard(t, false))}
                   </ul>
                 </SortableGroup>
               )}
             </section>
           )}
         </>
+      )}
+
+      {completing && (
+        <CompleteShipModal
+          task={completing}
+          onClose={() => setCompleting(null)}
+          onWriteoff={(form) => handleCompleteShip(completing, form)}
+          onCompleteOnly={() => {
+            const task = completing;
+            setCompleting(null);
+            setTaskDone(task, true);
+          }}
+        />
       )}
     </div>
   );
