@@ -12,8 +12,9 @@ import InlineLoginForm from "./InlineLoginForm";
 // prisijungimo forma tiesiog čia, tame pačiame puslapyje — be
 // peradresavimo į atskirą /login maršrutą.
 // "tasks" — darbų modulis (/darbai): adminas arba profiles.tasks_enabled.
-export default function RequirePermission({ permission, palletPermission, devicePermission, tasks, children }) {
-  const { user, loading, hasPermission, hasPalletPermission, hasDevicePermission, canUseTasks } = useAuth();
+// "notes" — užrašinė (/uzrasai): adminas arba profiles.notes_enabled.
+export default function RequirePermission({ permission, palletPermission, devicePermission, tasks, notes, children }) {
+  const { user, loading, hasPermission, hasPalletPermission, hasDevicePermission, canUseTasks, canUseNotes } = useAuth();
 
   if (loading) {
     return (
@@ -49,7 +50,7 @@ export default function RequirePermission({ permission, palletPermission, device
     );
   }
 
-  if (tasks && !canUseTasks) {
+  if ((tasks && !canUseTasks) || (notes && !canUseNotes)) {
     return (
       <div className="flex flex-col items-center gap-2 py-20 text-center text-ink-600/60">
         <ShieldAlert size={22} className="text-ink-600/30" />

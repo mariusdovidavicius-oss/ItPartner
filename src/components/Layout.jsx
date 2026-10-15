@@ -2,7 +2,7 @@ import { useMemo, useState } from "react";
 import { Link, NavLink, Outlet, useLocation } from "react-router-dom";
 import {
   ScanLine, Boxes, ChevronDown, Wrench, PackageMinus, BarChart3, Users, LogOut, Cpu, FileUp,
-  ClipboardList, MoreHorizontal, X, Warehouse, ListTodo
+  ClipboardList, MoreHorizontal, X, Warehouse, ListTodo, NotebookPen
 } from "lucide-react";
 import { useAuth } from "../lib/AuthProvider";
 import InlineLoginForm from "./InlineLoginForm";
@@ -15,7 +15,7 @@ import { useTaskCounts } from "../lib/tasks";
 // reikalingas tik daliai funkcijų (priedų modulis), ši juosta veikia kaip
 // vienintelis prisijungimo įėjimo taškas visai programai.
 function TopBar() {
-  const { user, profile, isAdmin, canUseTasks, signOut } = useAuth();
+  const { user, profile, isAdmin, canUseTasks, canUseNotes, signOut } = useAuth();
   // Darbų sąrašas — adminui ir pažymėtiems vartotojams (žr. App.jsx /darbai)
   const taskCounts = useTaskCounts(canUseTasks ? user?.id : null);
   return (
@@ -40,6 +40,20 @@ function TopBar() {
                 </span>
               )}
             </Link>
+          )}
+          {/* Užrašinė — šalia darbų, ne šoniniame meniu */}
+          {canUseNotes && (
+            <NavLink
+              to="/uzrasai"
+              className={({ isActive }) =>
+                `flex items-center gap-1.5 rounded-lg px-2 py-1 text-xs font-semibold transition ${
+                  isActive ? "bg-white/10 text-white" : "text-white/70 hover:bg-white/5 hover:text-white"
+                }`
+              }
+            >
+              <NotebookPen size={13} />
+              Užrašai
+            </NavLink>
           )}
           <span className="text-xs font-medium text-white/70">
             {profile?.username || "…"}{isAdmin && " · admin"}

@@ -26,6 +26,7 @@ const Stats = lazy(() => import("./pages/Stats"));
 const Import = lazy(() => import("./pages/Import"));
 const Warehouses = lazy(() => import("./pages/Warehouses"));
 const Tasks = lazy(() => import("./pages/Tasks"));
+const Notes = lazy(() => import("./pages/Notes"));
 
 function RouteFallback() {
   return (
@@ -68,6 +69,8 @@ export default function App() {
           <Route path="/sandeliai" element={<RequirePermission permission="admin"><Warehouses /></RequirePermission>} />
           {/* Asmeninis darbų sąrašas — kol kas tik adminui; kiekvienas mato tik savo darbus (RLS) */}
           <Route path="/darbai" element={<RequirePermission tasks><Tasks /></RequirePermission>} />
+          {/* Užrašinė — asmeniniai (mato tik autorius) ir bendri (mato visi su užrašine) užrašai, RLS */}
+          <Route path="/uzrasai" element={<RequirePermission notes><Notes /></RequirePermission>} />
           <Route path="/admin-reset" element={<RequirePermission permission="admin"><AdminReset /></RequirePermission>} />
         </Route>
       </Routes>

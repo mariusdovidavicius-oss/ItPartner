@@ -18,7 +18,7 @@ export default async function handler(req, res) {
   }
 
   const {
-    id, password, permissions = [], palletPermissions = [], devicePermissions = [], tasksEnabled = false, isAdmin = false
+    id, password, permissions = [], palletPermissions = [], devicePermissions = [], tasksEnabled = false, notesEnabled = false, isAdmin = false
   } = req.body || {};
 
   const cleanId = String(id || "").trim().toLowerCase();
@@ -58,14 +58,14 @@ export default async function handler(req, res) {
 
   const newUserId = created.user.id;
 
-  if (isAdmin || tasksEnabled) {
+  if (isAdmin || tasksEnabled || notesEnabled) {
     const { error } = await supabaseAdmin
       .from("profiles")
-      .update({ is_admin: !!isAdmin, tasks_enabled: !!tasksEnabled })
+      .update({ is_admin: !!isAdmin, tasks_enabled: !!tasksEnabled, notes_enabled: !!notesEnabled })
       .eq("id", newUserId);
     if (error) {
       await supabaseAdmin.auth.admin.deleteUser(newUserId);
-      res.status(500).json({ error: `Vartotojas sukurtas, bet nepavyko priskirti admin / darbų teisės: ${error.message}` });
+      res.status(500).json({ error: `Vartotojas sukurtas, bet nepavyko priskirti admin / darbų / užrašinės teisės: ${error.message}` });
       return;
     }
   }

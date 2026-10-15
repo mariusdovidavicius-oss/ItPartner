@@ -6,6 +6,19 @@ export { idToEmail };
 
 const AuthContext = createContext(null);
 
+// Jei DB dar neturi naujo stulpelio (migracija nepaleista), užklausa su juo
+// grąžina klaidą ir profilis neįsikeltų — vartotojas neturėtų jokių teisių,
+// net adminas. Tada kraunama be jo (užrašinė tiesiog nerodoma).
+async function loadProfileRow(userId) {
+  const res = await supabase
+    .from("profiles")
+    .select("id, username, is_admin, tasks_enabled, notes_enabled")
+    .eq("id", userId)
+    .maybeSingle();
+  if (!res.error) return res;
+  return supabase.from("profiles").select("id, username, is_admin, tasks_enabled").eq("id", userId).maybeSingle();
+}
+
 export function AuthProvider({ children }) {
   const [session, setSession] = useState(undefined); // undefined = dar nežinoma, null = neprisijungęs
   const [profile, setProfile] = useState(null);
@@ -17,7 +30,7 @@ export function AuthProvider({ children }) {
   const loadProfile = useCallback(async (userId) => {
     setLoadingProfile(true);
     const [{ data: profileRow }, { data: permRows }, { data: palletPermRows }, { data: devicePermRows }] = await Promise.all([
-      supabase.from("profiles").select("id, username, is_admin, tasks_enabled").eq("id", userId).maybeSingle(),
+      loadProfileRow(userId),
       supabase.from("user_permissions").select("permission").eq("user_id", userId),
       supabase.from("pallet_permissions").select("permission").eq("user_id", userId),
       supabase.from("device_permissions").select("permission").eq("user_id", userId)
@@ -84,6 +97,8 @@ export function AuthProvider({ children }) {
     isAdmin: !!profile?.is_admin,
     // Darbų modulis (/darbai) — adminui visada, kitiems pažymėjus vartotojų puslapyje.
     canUseTasks: !!profile?.is_admin || !!profile?.tasks_enabled,
+    // Užrašinė (/uzrasai) — taip pat: adminui visada, kitiems pažymėjus.
+    canUseNotes: !!profile?.is_admin || !!profile?.notes_enabled,
     hasPermission,
     hasPalletPermission,
     hasDevicePermission,

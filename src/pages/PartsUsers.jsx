@@ -20,6 +20,7 @@ function draftFromUser(u) {
   return {
     is_admin: u.is_admin,
     tasks_enabled: !!u.tasks_enabled,
+    notes_enabled: !!u.notes_enabled,
     permissions: new Set(u.permissions),
     palletPermissions: new Set(u.palletPermissions),
     devicePermissions: new Set(u.devicePermissions)
@@ -31,6 +32,7 @@ function isDraftDirty(user, draft) {
   return (
     draft.is_admin !== user.is_admin ||
     draft.tasks_enabled !== !!user.tasks_enabled ||
+    draft.notes_enabled !== !!user.notes_enabled ||
     !setsEqual(draft.permissions, user.permissions) ||
     !setsEqual(draft.palletPermissions, user.palletPermissions) ||
     !setsEqual(draft.devicePermissions, user.devicePermissions)
@@ -57,7 +59,14 @@ export default function PartsUsers() {
   async function load() {
     setLoading(true);
     const [{ data: profiles }, { data: perms }, { data: palletPerms }, { data: devicePerms }] = await Promise.all([
-      supabase.from("profiles").select("id, username, is_admin, tasks_enabled").order("username"),
+      // Be notes_enabled, jei DB dar neturi to stulpelio (migracija nepaleista)
+      supabase
+        .from("profiles")
+        .select("id, username, is_admin, tasks_enabled, notes_enabled")
+        .order("username")
+        .then((res) =>
+          res.error ? supabase.from("profiles").select("id, username, is_admin, tasks_enabled").order("username") : res
+        ),
       supabase.from("user_permissions").select("user_id, permission"),
       supabase.from("pallet_permissions").select("user_id, permission"),
       supabase.from("device_permissions").select("user_id, permission")
@@ -102,7 +111,7 @@ export default function PartsUsers() {
     });
   }
 
-  // Paprasti taip/ne laukai profiles lentelėje: is_admin, tasks_enabled.
+  // Paprasti taip/ne laukai profiles lentelėje: is_admin, tasks_enabled, notes_enabled.
   function setDraftFlag(userId, flag, checked) {
     setDrafts((prev) => {
       const user = users.find((u) => u.id === userId);
@@ -142,9 +151,16 @@ export default function PartsUsers() {
         ...diffPermissionTasks(user.id, "pallet_permissions", user.palletPermissions, draft.palletPermissions),
         ...diffPermissionTasks(user.id, "device_permissions", user.devicePermissions, draft.devicePermissions)
       );
-      if (draft.is_admin !== user.is_admin || draft.tasks_enabled !== user.tasks_enabled) {
+      if (
+        draft.is_admin !== user.is_admin ||
+        draft.tasks_enabled !== !!user.tasks_enabled ||
+        draft.notes_enabled !== !!user.notes_enabled
+      ) {
         tasks.push(
-          supabase.from("profiles").update({ is_admin: draft.is_admin, tasks_enabled: draft.tasks_enabled }).eq("id", user.id)
+          supabase
+            .from("profiles")
+            .update({ is_admin: draft.is_admin, tasks_enabled: draft.tasks_enabled, notes_enabled: draft.notes_enabled })
+            .eq("id", user.id)
         );
       }
     }
@@ -252,6 +268,7 @@ export default function PartsUsers() {
                     </th>
                   ))}
                   <th className="px-3 py-2.5 text-center font-semibold">Darbai</th>
+                  <th className="px-3 py-2.5 text-center font-semibold">Užrašinė</th>
                   <th className="px-3 py-2.5 text-center font-semibold">Admin</th>
                   <th className="w-0 px-3 py-2.5"></th>
                 </tr>
@@ -309,6 +326,16 @@ export default function PartsUsers() {
                           onChange={(e) => setDraftFlag(u.id, "tasks_enabled", e.target.checked)}
                           className="h-4 w-4 rounded border-ink-700/30 text-signal-orange focus:ring-signal-orange/30 disabled:opacity-40"
                           title="Darbų modulis (/darbai); tik jiems galima priskirti išsiuntimą"
+                        />
+                      </td>
+                      <td className="px-3 py-2.5 text-center">
+                        <input
+                          type="checkbox"
+                          checked={effective.is_admin || !!effective.notes_enabled}
+                          disabled={effective.is_admin || saving}
+                          onChange={(e) => setDraftFlag(u.id, "notes_enabled", e.target.checked)}
+                          className="h-4 w-4 rounded border-ink-700/30 text-signal-orange focus:ring-signal-orange/30 disabled:opacity-40"
+                          title="Užrašinė (/uzrasai): asmeniniai ir bendri užrašai"
                         />
                       </td>
                       <td className="px-3 py-2.5 text-center">
@@ -415,6 +442,7 @@ function CreateUserModal({ accessToken, onClose, onCreated }) {
   const [devicePermissions, setDevicePermissions] = useState(new Set());
   const [isAdmin, setIsAdmin] = useState(false);
   const [tasksEnabled, setTasksEnabled] = useState(false);
+  const [notesEnabled, setNotesEnabled] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
   const [done, setDone] = useState(false);
@@ -467,6 +495,7 @@ function CreateUserModal({ accessToken, onClose, onCreated }) {
           palletPermissions: [...palletPermissions],
           devicePermissions: [...devicePermissions],
           tasksEnabled,
+          notesEnabled,
           isAdmin
         })
       });
@@ -608,6 +637,16 @@ function CreateUserModal({ accessToken, onClose, onCreated }) {
               className="h-4 w-4 rounded border-ink-700/30 text-signal-orange focus:ring-signal-orange/30"
             />
             Darbų modulis (/darbai) — galima priskirti išsiuntimus
+          </label>
+          <label className="flex items-center gap-2 text-sm text-ink-700">
+            <input
+              type="checkbox"
+              checked={isAdmin || notesEnabled}
+              disabled={isAdmin}
+              onChange={(e) => setNotesEnabled(e.target.checked)}
+              className="h-4 w-4 rounded border-ink-700/30 text-signal-orange focus:ring-signal-orange/30"
+            />
+            Užrašinė (/uzrasai) — asmeniniai ir bendri užrašai
           </label>
           <label className="flex items-center gap-2 text-sm font-medium text-ink-800">
             <input
