@@ -282,8 +282,9 @@ export default function ScanEntry() {
   async function handleSavePalletNotes(palletId) {
     setSavingPalletNotesId(palletId);
     const value = palletNotesDrafts[palletId] || "";
-    await supabase.from("pallets").update({ notes: value.trim() || null }).eq("id", palletId);
+    const { error } = await supabase.from("pallets").update({ notes: value.trim() || null }).eq("id", palletId);
     setSavingPalletNotesId(null);
+    if (error) setFeedback({ type: "error", message: `Nepavyko išsaugoti pastabos: ${error.message}` });
   }
 
   function toggleExpand(id) {
@@ -332,7 +333,13 @@ export default function ScanEntry() {
   async function handleClose(pallet) {
     setClosingId(pallet.id);
     setCloseMsg("");
-    await supabase.from("pallets").update({ status: "closed" }).eq("id", pallet.id);
+    // Nepavykus — jokio "išvežta" pranešimo ir etiketės spausdinimo.
+    const { error } = await supabase.from("pallets").update({ status: "closed" }).eq("id", pallet.id);
+    if (error) {
+      setClosingId(null);
+      setFeedback({ type: "error", message: `Nepavyko pažymėti išvežta: ${error.message}` });
+      return;
+    }
     const { data: updated } = await supabase
       .from("pallets")
       .select("number, destination, packed_at")
@@ -358,13 +365,14 @@ export default function ScanEntry() {
     // identifikatorius, kol paletė neuždaryta.
     if (!confirm(`Ištrinti tuščią paletę (${prettifyDestination(pallet.destination)})? Šio veiksmo negalima atšaukti.`)) return;
     setDeletingPalletId(pallet.id);
-    await supabase.from("pallets").delete().eq("id", pallet.id);
+    const { error } = await supabase.from("pallets").delete().eq("id", pallet.id);
     setDeletingPalletId(null);
+    if (error) setFeedback({ type: "error", message: `Nepavyko ištrinti paletės: ${error.message}` });
     loadOpenPallets();
   }
 
   async function handleSaveItem(itemId, form) {
-    await supabase
+    const { error } = await supabase
       .from("items")
       .update({
         ian: form.ian.trim(),
@@ -373,6 +381,7 @@ export default function ScanEntry() {
         notes: form.notes.trim() || null
       })
       .eq("id", itemId);
+    if (error) setFeedback({ type: "error", message: `Nepavyko išsaugoti: ${error.message}` });
     setEditingItem(null);
     loadOpenPallets();
   }
@@ -380,8 +389,9 @@ export default function ScanEntry() {
   async function handleDeleteItem(item) {
     if (!confirm(`Ar tikrai norite ištrinti „${item.name || item.ian}“?`)) return;
     setDeletingId(item.id);
-    await supabase.from("items").delete().eq("id", item.id);
+    const { error } = await supabase.from("items").delete().eq("id", item.id);
     setDeletingId(null);
+    if (error) setFeedback({ type: "error", message: `Nepavyko ištrinti: ${error.message}` });
     loadOpenPallets();
   }
 

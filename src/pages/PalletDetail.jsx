@@ -65,8 +65,13 @@ export default function PalletDetail() {
   async function handleSaveNotes() {
     setSavingNotes(true);
     setNotesSaved(false);
-    await supabase.from("pallets").update({ notes: notesDraft.trim() || null }).eq("id", id);
+    const { error } = await supabase.from("pallets").update({ notes: notesDraft.trim() || null }).eq("id", id);
     setSavingNotes(false);
+    if (error) {
+      setStatusError(`Nepavyko išsaugoti pastabos: ${error.message}`);
+      return;
+    }
+    setStatusError("");
     setNotesSaved(true);
     setTimeout(() => setNotesSaved(false), 3000);
   }
@@ -175,7 +180,7 @@ export default function PalletDetail() {
   }
 
   async function handleSaveItem(itemId, form) {
-    await supabase
+    const { error } = await supabase
       .from("items")
       .update({
         ian: form.ian.trim(),
@@ -184,6 +189,7 @@ export default function PalletDetail() {
         notes: form.notes.trim() || null
       })
       .eq("id", itemId);
+    setRemoveError(error ? `Nepavyko išsaugoti: ${error.message}` : "");
     setEditingItem(null);
     load();
   }
