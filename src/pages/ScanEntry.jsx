@@ -39,21 +39,21 @@ function openPalletName(pallet) {
   return "nauja paletė";
 }
 
-// Katalogo variantai su gamintoju/tipu (iš catalog). `refine` papildo
-// užklausą filtru/limitu.
+// Katalogo variantai su gamintoju/tipu — varianto savo, o jei jo nėra,
+// IAN (catalog) numatytasis. `refine` papildo užklausą filtru/limitu.
 async function fetchVariants(refine) {
   const { data } = await refine(
     supabase
       .from("catalog_variants")
-      .select("ian, name, catalog(manufacturer, item_type)")
+      .select("ian, name, manufacturer, item_type, catalog(manufacturer, item_type)")
       .order("ian", { ascending: true })
       .order("name", { ascending: true })
   );
   return (data || []).map((v) => ({
     ian: v.ian,
     name: v.name,
-    manufacturer: v.catalog?.manufacturer ?? null,
-    item_type: v.catalog?.item_type ?? null
+    manufacturer: v.manufacturer || v.catalog?.manufacturer || null,
+    item_type: v.item_type || v.catalog?.item_type || null
   }));
 }
 
@@ -62,7 +62,7 @@ async function fetchVariants(refine) {
 function parseManualEntry(raw) {
   const text = String(raw ?? "").trim();
   if (!text) return { ian: null, name: null };
-  const match = text.match(/^(.*)\((\d+)\)\s*$/);
+  const match = text.match(/^(.*)\(\s*(\d+)\s*\)\s*$/);
   if (!match) return { ian: null, name: null };
   return { ian: match[2].trim(), name: match[1].trim() };
 }
@@ -389,7 +389,9 @@ export default function ScanEntry() {
   // būdu, tiek pasirinkus rezultatą paieškoje pagal pavadinimą. `nameValue`,
   // pateiktas per overrides, leidžia paieškos pasirinkimui perduoti
   // autoritetingą katalogo pavadinimą, nepasikliaujant asinchroniniu state
-  // atnaujinimu. Grąžina true/false — ar registravimas pavyko.
+  // atnaujinimu. `manufacturer`/`itemType` — pasirinkto varianto (žr.
+  // catalog_variants), kitaip naudojamas IAN (catalog) numatytasis.
+  // Grąžina true/false — ar registravimas pavyko.
   async function registerItem(ianValue, overrides = {}) {
     const trimmedIan = String(ianValue || "").trim();
     if (!trimmedIan) return false;
@@ -419,7 +421,10 @@ export default function ScanEntry() {
       return false;
     }
 
-    const destination = computeDestination(catalogRow?.manufacturer, catalogRow?.item_type);
+    const destination = computeDestination(
+      overrides.manufacturer || catalogRow.manufacturer,
+      overrides.itemType || catalogRow.item_type
+    );
     const isUnclassified = destination === UNCLASSIFIED;
 
     // Rasti arba sukurti atvirą tos paskirties paletę — pažymėtą "Kraunu
@@ -526,17 +531,20 @@ export default function ScanEntry() {
     e.preventDefault();
     // IAN su keliais daiktais (variantais) neregistruojamas aklai — skeneris
     // įveda + Enter greičiau nei pasiūlymų debounce, todėl tikrinama čia.
+    // Vienintelis variantas lemia paletę savo gamintoju/tipu.
     const trimmed = ian.trim();
-    if (trimmed) {
-      const variants = await fetchVariants((q) => q.eq("ian", trimmed));
-      if (variants.length > 1) {
-        setIanSuggestions(variants);
-        setFeedback({ type: "warn", message: `IAN ${trimmed} žymi ${variants.length} skirtingus daiktus — pasirinkite, kurį registruojate.` });
-        inputRef.current?.focus();
-        return;
-      }
+    const variants = trimmed ? await fetchVariants((q) => q.eq("ian", trimmed)) : [];
+    if (variants.length > 1) {
+      setIanSuggestions(variants);
+      setFeedback({ type: "warn", message: `IAN ${trimmed} žymi ${variants.length} skirtingus daiktus — pasirinkite, kurį registruojate.` });
+      inputRef.current?.focus();
+      return;
     }
-    const success = await registerItem(ian);
+    const single = variants[0];
+    const success = await registerItem(
+      ian,
+      single ? { manufacturer: single.manufacturer, itemType: single.item_type } : {}
+    );
     if (success) {
       setIan("");
       setName("");
@@ -550,7 +558,11 @@ export default function ScanEntry() {
   // pavadinimą; laukai išvalomi kaip po įprasto registravimo.
   async function handleSelectIanSuggestion(result) {
     if (saving) return;
-    const success = await registerItem(result.ian, { nameValue: result.name });
+    const success = await registerItem(result.ian, {
+      nameValue: result.name,
+      manufacturer: result.manufacturer,
+      itemType: result.item_type
+    });
     if (success) {
       setIan("");
       setName("");
@@ -575,13 +587,12 @@ export default function ScanEntry() {
     nameInputRef.current?.focus();
   }
 
-  // Naujo, kataloge dar neregistruoto įrankio įvedimas rankiniu būdu.
+  // Naujo įrankio (ar naujo esamo IAN daikto) įvedimas rankiniu būdu.
   // 1) ištraukiamas IAN + pavadinimas iš pilno teksto (ta pati regex logika
-  //    kaip CatalogImport.jsx), 2) UPSERT į catalog pagal ian (kad ateityje
-  //    šis IAN būtų atpažįstamas automatiškai), 3) registruojama TOKIU PAT
-  //    būdu, kaip įprastas IAN skenavimas — registerItem savo viduje iš
-  //    naujo užklausia catalog, todėl automatiškai pamato ką tik įrašytą
-  //    gamintoją/tipą ir teisingai apskaičiuoja paskirtį.
+  //    kaip CatalogImport.jsx), 2) catalog eilutė sukuriama TIK jei IAN dar
+  //    nėra — esamo IAN gamintojas/tipas/pavadinimas nekeičiami, 3) daiktas
+  //    įrašomas kaip šio IAN variantas su SAVO gamintoju/tipu (pvz. įrankio
+  //    kroviklis — "Bat"), 4) registruojamas į to varianto paletę.
   async function handleManualSubmit() {
     if (saving) return;
     setManualError("");
@@ -609,7 +620,7 @@ export default function ScanEntry() {
           item_type: manualItemType,
           raw_text: manualText.trim()
         },
-        { onConflict: "ian" }
+        { onConflict: "ian", ignoreDuplicates: true }
       );
 
     if (catalogError) {
@@ -618,14 +629,33 @@ export default function ScanEntry() {
       return;
     }
 
-    // Naujas pavadinimas tampa dar vienu šio IAN variantu (esami lieka).
+    // Naujas pavadinimas tampa dar vienu šio IAN variantu (kiti lieka); tas
+    // pats pavadinimas — atnaujinamas jo gamintojas/tipas.
     if (parsed.name) {
-      await supabase
+      const { error: variantError } = await supabase
         .from("catalog_variants")
-        .upsert({ ian: parsed.ian, name: parsed.name, raw_text: manualText.trim() }, { onConflict: "ian,name", ignoreDuplicates: true });
+        .upsert(
+          {
+            ian: parsed.ian,
+            name: parsed.name,
+            raw_text: manualText.trim(),
+            manufacturer: manualManufacturer,
+            item_type: manualItemType
+          },
+          { onConflict: "ian,name" }
+        );
+      if (variantError) {
+        setSaving(false);
+        setManualError(`Klaida įrašant variantą: ${variantError.message}`);
+        return;
+      }
     }
 
-    const success = await registerItem(parsed.ian, { nameValue: parsed.name });
+    const success = await registerItem(parsed.ian, {
+      nameValue: parsed.name,
+      manufacturer: manualManufacturer,
+      itemType: manualItemType
+    });
     if (success) {
       setManualText("");
     }

@@ -84,18 +84,23 @@ export default function CatalogImport() {
   const failedCount = parsed.length - validEntries.length;
 
   // Visi to paties IAN pavadinimai (variantai) — catalog gauna vieną eilutę
-  // IAN'ui, o catalog_variants — kiekvieną skirtingą pavadinimą.
+  // IAN'ui, o catalog_variants — kiekvieną skirtingą pavadinimą su SAVO
+  // gamintoju/tipu (pvz. įrankis ir jo kroviklis su tuo pačiu IAN keliauja į
+  // skirtingas paletes). Gamintojas/tipas įtraukiami tik jei stulpelis
+  // pasirinktas — kaip ir catalog įrašui.
   const variantsByIan = useMemo(() => {
     const map = new Map();
     for (const entry of validEntries) {
       const name = (entry.name || "").trim();
       if (!name) continue;
       if (!map.has(entry.ian)) map.set(entry.ian, new Map());
-      const names = map.get(entry.ian);
-      if (!names.has(name)) names.set(name, { ian: entry.ian, name, raw_text: entry.raw });
+      const record = { ian: entry.ian, name, raw_text: entry.raw };
+      if (manufacturerColumn !== "") record.manufacturer = entry.manufacturer;
+      if (typeColumn !== "") record.item_type = entry.item_type;
+      map.get(entry.ian).set(name, record);
     }
     return map;
-  }, [validEntries]);
+  }, [validEntries, manufacturerColumn, typeColumn]);
   const multiVariantCount = useMemo(
     () => [...variantsByIan.values()].filter((names) => names.size > 1).length,
     [variantsByIan]
@@ -159,12 +164,13 @@ export default function CatalogImport() {
         break;
       }
 
-      // Variantai — jau esantys (tas pats IAN + pavadinimas) paliekami.
+      // Variantai — esantys (tas pats IAN + pavadinimas) atnaujinami failo
+      // gamintoju/tipu, kiti (faile nesantys) paliekami.
       const variants = ians.flatMap((ian) => [...(variantsByIan.get(ian)?.values() || [])]);
       if (variants.length) {
         const { error: variantError } = await supabase
           .from("catalog_variants")
-          .upsert(variants, { onConflict: "ian,name", ignoreDuplicates: true });
+          .upsert(variants, { onConflict: "ian,name" });
         if (variantError) {
           errorMessage = `Variantai: ${variantError.message}`;
           break;

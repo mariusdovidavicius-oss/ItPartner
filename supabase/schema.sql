@@ -3866,6 +3866,20 @@ from public.catalog
 where nullif(trim(name), '') is not null
 on conflict (ian, name) do nothing;
 
+-- Gamintojas/tipas — varianto savybė (žr. migrate_catalog_variant_type.sql)
+alter table public.catalog_variants
+  add column if not exists manufacturer text,
+  add column if not exists item_type    text;
+
+-- Esami variantai paveldi IAN gamintoją/tipą.
+update public.catalog_variants v
+  set manufacturer = c.manufacturer,
+      item_type    = c.item_type
+  from public.catalog c
+  where c.ian = v.ian
+    and v.manufacturer is null
+    and v.item_type is null;
+
 -- ============================================================
 -- "KRAUNU ČIA" — kelios atviros tos pačios paskirties paletės (žr. migrate_pallet_loading.sql)
 -- ============================================================
